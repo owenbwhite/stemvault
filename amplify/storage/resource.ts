@@ -1,22 +1,21 @@
 import { defineStorage } from '@aws-amplify/backend';
 
-// High-resolution stems — owner-only read/write
+// {entity_id} must be the last path segment before the wildcard (Amplify constraint)
+// Keys within each bucket follow: {userId}/stems/{trackId}/{versionId}.ext
+
 export const stemsStorage = defineStorage({
   name: 'stemvaultStems',
   access: (allow) => ({
-    // Full-res stems: projects/{ownerIdentityId}/stems/{trackId}/{versionId}.*
-    'projects/{entity_id}/stems/*': [
+    '{entity_id}/*': [
       allow.entity('identity').to(['read', 'write', 'delete']),
     ],
   }),
 });
 
-// Low-res proxy audio for browser preview — broader read access
 export const proxiesStorage = defineStorage({
   name: 'stemvaultProxies',
   access: (allow) => ({
-    // Transcoded proxies readable by any authenticated user (for collaboration)
-    'projects/{entity_id}/proxies/*': [
+    '{entity_id}/*': [
       allow.entity('identity').to(['read', 'write', 'delete']),
       allow.authenticated.to(['read']),
     ],

@@ -292,10 +292,11 @@ function UploadModal({ trackId, userId, trackType, onClose }: UploadModalProps) 
     setProgress(0);
 
     try {
-      // Path: projects/{userId}/stems/{trackId}/{timestamp}_{filename}
+      // Path: {userId}/stems/{trackId}/{timestamp}.{ext}
+      // {userId} must be the first segment to satisfy Amplify storage {entity_id} constraint
       const ext = file.name.split('.').pop() ?? 'wav';
       const timestamp = Date.now();
-      const s3Key = `projects/${userId}/stems/${trackId}/${timestamp}.${ext}`;
+      const s3Key = `${userId}/stems/${trackId}/${timestamp}.${ext}`;
 
       await uploadData({
         path: s3Key,
