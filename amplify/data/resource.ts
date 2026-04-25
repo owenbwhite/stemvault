@@ -17,6 +17,7 @@ const schema = a.schema({
     .model({
       name: a.string().required(),
       type: a.enum(['AUDIO', 'MIDI', 'INSTRUMENT']),
+      stemCategory: a.string(),
       projectId: a.id().required(),
       project: a.belongsTo('Project', 'projectId'),
       activeVersionId: a.id(),

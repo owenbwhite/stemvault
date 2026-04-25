@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { generateClient } from 'aws-amplify/data';
 import type { Schema } from '../../amplify/data/resource';
+import { BulkUploadModal } from './BulkUploadModal';
 
 const client = generateClient<Schema>();
 
@@ -15,6 +16,7 @@ export function ProjectDetail() {
   const [project, setProject] = useState<Project | null>(null);
   const [tracks, setTracks] = useState<Track[]>([]);
   const [showAddTrack, setShowAddTrack] = useState(false);
+  const [showBulkUpload, setShowBulkUpload] = useState(false);
   const [newTrackName, setNewTrackName] = useState('');
   const [newTrackType, setNewTrackType] = useState<'AUDIO' | 'MIDI' | 'INSTRUMENT'>('AUDIO');
   const [saving, setSaving] = useState(false);
@@ -95,9 +97,14 @@ export function ProjectDetail() {
             </p>
           )}
         </div>
-        <button className="btn-primary" onClick={() => setShowAddTrack(true)}>
-          + Add track
-        </button>
+        <div style={{ display: 'flex', gap: '8px' }}>
+          <button className="btn-secondary" onClick={() => setShowAddTrack(true)}>
+            + Add track
+          </button>
+          <button className="btn-primary" onClick={() => setShowBulkUpload(true)}>
+            ↑ Upload stems
+          </button>
+        </div>
       </div>
 
       <p className="section-title">Tracks ({tracks.length})</p>
@@ -105,10 +112,11 @@ export function ProjectDetail() {
       {tracks.length === 0 ? (
         <div className="empty-state">
           <div className="empty-state-icon">🎚️</div>
-          <p>No tracks yet. Add your first stem track to start versioning.</p>
-          <button className="btn-secondary" onClick={() => setShowAddTrack(true)}>
-            Add track
-          </button>
+          <p>No tracks yet. Drop your stems to get started.</p>
+          <div style={{ display: 'flex', gap: '8px' }}>
+            <button className="btn-secondary" onClick={() => setShowAddTrack(true)}>Add track</button>
+            <button className="btn-primary" onClick={() => setShowBulkUpload(true)}>Upload stems</button>
+          </div>
         </div>
       ) : (
         tracks.map((track) => (
@@ -119,6 +127,14 @@ export function ProjectDetail() {
             onDelete={(e) => handleDeleteTrack(e, track.id)}
           />
         ))
+      )}
+
+      {showBulkUpload && (
+        <BulkUploadModal
+          projectId={projectId!}
+          existingTrackCount={tracks.length}
+          onClose={() => setShowBulkUpload(false)}
+        />
       )}
 
       {showAddTrack && (
@@ -186,9 +202,16 @@ function TrackRow({ track, onClick, onDelete }: {
       <span className={`badge ${typeClass[track.type ?? 'AUDIO']}`}>
         {track.type ?? 'AUDIO'}
       </span>
-      {track.activeVersionId && (
-        <span className="meta-item" style={{ fontSize: '11px' }}>
-          active version set
+      {track.stemCategory && (
+        <span style={{
+          fontSize: '11px',
+          color: 'var(--text-secondary)',
+          background: 'var(--bg-hover)',
+          padding: '2px 8px',
+          borderRadius: '999px',
+          border: '1px solid var(--border)',
+        }}>
+          {track.stemCategory}
         </span>
       )}
       <div className="track-controls">
