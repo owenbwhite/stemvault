@@ -32,6 +32,7 @@ const KEY_OPTIONS = [
 
 export function ProjectDashboard() {
   const [projects, setProjects] = useState<Project[]>([]);
+  const [activeStemCounts, setActiveStemCounts] = useState<Record<string, number>>({});
   const [showModal, setShowModal] = useState(false);
   const [form, setForm] = useState<NewProjectForm>(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
@@ -39,12 +40,25 @@ export function ProjectDashboard() {
   const navigate = useNavigate();
 
   useEffect(() => {
-    const sub = client.models.Project.observeQuery().subscribe({
+    const projectSub = client.models.Project.observeQuery().subscribe({
       next: ({ items }) => setProjects([...items].sort(
         (a, b) => new Date(b.createdAt!).getTime() - new Date(a.createdAt!).getTime()
       )),
     });
-    return () => sub.unsubscribe();
+
+    const trackSub = client.models.Track.observeQuery().subscribe({
+      next: ({ items }) => {
+        const counts: Record<string, number> = {};
+        for (const t of items) {
+          if (t.activeVersionId) {
+            counts[t.projectId] = (counts[t.projectId] ?? 0) + 1;
+          }
+        }
+        setActiveStemCounts(counts);
+      },
+    });
+
+    return () => { projectSub.unsubscribe(); trackSub.unsubscribe(); };
   }, []);
 
   const handleCreate = async () => {
@@ -96,6 +110,7 @@ export function ProjectDashboard() {
             <ProjectCard
               key={p.id}
               project={p}
+              activeStems={activeStemCounts[p.id] ?? 0}
               onClick={() => navigate(`/project/${p.id}`)}
               onDelete={(e) => handleDelete(e, p.id)}
             />
@@ -188,8 +203,9 @@ export function ProjectDashboard() {
   );
 }
 
-function ProjectCard({ project, onClick, onDelete }: {
+function ProjectCard({ project, activeStems, onClick, onDelete }: {
   project: Project;
+  activeStems: number;
   onClick: () => void;
   onDelete: (e: React.MouseEvent) => void;
 }) {
@@ -230,6 +246,9 @@ function ProjectCard({ project, onClick, onDelete }: {
         )}
         {project.genre && (
           <span className="meta-item">{project.genre}</span>
+        )}
+        {activeStems > 0 && (
+          <span className="meta-item"><strong>{activeStems}</strong> active stem{activeStems !== 1 ? 's' : ''}</span>
         )}
         <span className="meta-item" style={{ marginLeft: 'auto' }}>{created}</span>
       </div>
