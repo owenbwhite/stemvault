@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.DS_Store
+*.tsbuildinfo
+
+# Amplify generated (overwritten by sandbox/pipeline-deploy)
+amplify_outputs.json
+.amplify/
+
+# Local env
+.env
+.env.local
