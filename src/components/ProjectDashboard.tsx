@@ -1,11 +1,14 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { generateClient } from 'aws-amplify/data';
+import { getUrl } from 'aws-amplify/storage';
 import type { Schema } from '../../amplify/data/resource';
+import { AudioPlayer } from './AudioPlayer';
 
 const client = generateClient<Schema>();
 
 type Project = Schema['Project']['type'];
+type Track = Schema['Track']['type'];
 
 interface NewProjectForm {
   title: string;
@@ -32,7 +35,7 @@ const KEY_OPTIONS = [
 
 export function ProjectDashboard() {
   const [projects, setProjects] = useState<Project[]>([]);
-  const [activeStemCounts, setActiveStemCounts] = useState<Record<string, number>>({});
+  const [activeTracksByProject, setActiveTracksByProject] = useState<Record<string, Track[]>>({});
   const [showModal, setShowModal] = useState(false);
   const [form, setForm] = useState<NewProjectForm>(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
@@ -48,13 +51,13 @@ export function ProjectDashboard() {
 
     const trackSub = client.models.Track.observeQuery().subscribe({
       next: ({ items }) => {
-        const counts: Record<string, number> = {};
+        const byProject: Record<string, Track[]> = {};
         for (const t of items) {
           if (t.activeVersionId) {
-            counts[t.projectId] = (counts[t.projectId] ?? 0) + 1;
+            (byProject[t.projectId] ??= []).push(t);
           }
         }
-        setActiveStemCounts(counts);
+        setActiveTracksByProject(byProject);
       },
     });
 
@@ -110,7 +113,7 @@ export function ProjectDashboard() {
             <ProjectCard
               key={p.id}
               project={p}
-              activeStems={activeStemCounts[p.id] ?? 0}
+              activeTracks={activeTracksByProject[p.id] ?? []}
               onClick={() => navigate(`/project/${p.id}`)}
               onDelete={(e) => handleDelete(e, p.id)}
             />
@@ -203,15 +206,47 @@ export function ProjectDashboard() {
   );
 }
 
-function ProjectCard({ project, activeStems, onClick, onDelete }: {
+type StemEntry = { url: string; waveformData: number[] | null };
+
+function ProjectCard({ project, activeTracks, onClick, onDelete }: {
   project: Project;
-  activeStems: number;
+  activeTracks: Track[];
   onClick: () => void;
   onDelete: (e: React.MouseEvent) => void;
 }) {
-  const created = project.createdAt
-    ? new Date(project.createdAt).toLocaleDateString()
-    : '';
+  const created = project.createdAt ? new Date(project.createdAt).toLocaleDateString() : '';
+  const [expanded, setExpanded] = useState(false);
+  const [stemData, setStemData] = useState<Record<string, StemEntry>>({});
+  const [loadingStems, setLoadingStems] = useState(false);
+  const activeCount = activeTracks.length;
+
+  const toggleExpand = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!expanded && Object.keys(stemData).length === 0 && activeTracks.length > 0) {
+      setLoadingStems(true);
+      const results = await Promise.all(
+        activeTracks.map(async (t) => {
+          if (!t.activeVersionId) return null;
+          try {
+            const res = await client.models.Version.get({ id: t.activeVersionId });
+            const key = res.data?.proxyS3Key ?? res.data?.s3Key;
+            if (!key) return null;
+            const { url } = await getUrl({ path: key, options: { expiresIn: 3600 } });
+            return { trackId: t.id, url: url.toString(), waveformData: res.data?.waveformData as number[] | null };
+          } catch {
+            return null;
+          }
+        })
+      );
+      const map: Record<string, StemEntry> = {};
+      for (const r of results) {
+        if (r) map[r.trackId] = { url: r.url, waveformData: r.waveformData };
+      }
+      setStemData(map);
+      setLoadingStems(false);
+    }
+    setExpanded((v) => !v);
+  };
 
   return (
     <div
@@ -238,20 +273,48 @@ function ProjectCard({ project, activeStems, onClick, onDelete }: {
         </p>
       )}
       <div className="meta-row" style={{ marginTop: 12 }}>
-        {project.bpm && (
-          <span className="meta-item"><strong>{project.bpm}</strong> BPM</span>
-        )}
-        {project.keySignature && (
-          <span className="meta-item"><strong>{project.keySignature}</strong></span>
-        )}
-        {project.genre && (
-          <span className="meta-item">{project.genre}</span>
-        )}
-        {activeStems > 0 && (
-          <span className="meta-item"><strong>{activeStems}</strong> active stem{activeStems !== 1 ? 's' : ''}</span>
+        {project.bpm && <span className="meta-item"><strong>{project.bpm}</strong> BPM</span>}
+        {project.keySignature && <span className="meta-item"><strong>{project.keySignature}</strong></span>}
+        {project.genre && <span className="meta-item">{project.genre}</span>}
+        {activeCount > 0 && (
+          <button
+            onClick={toggleExpand}
+            style={{ background: 'none', border: 'none', padding: '2px 6px', fontSize: '11px', color: 'var(--accent)', cursor: 'pointer', fontFamily: 'var(--font-mono)' }}
+          >
+            {activeCount} stem{activeCount !== 1 ? 's' : ''} {expanded ? '▴' : '▾'}
+          </button>
         )}
         <span className="meta-item" style={{ marginLeft: 'auto' }}>{created}</span>
       </div>
+
+      {expanded && (
+        <div
+          style={{ marginTop: 12, borderTop: '1px solid var(--border)', paddingTop: 12 }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          {loadingStems ? (
+            <div style={{ fontSize: '12px', color: 'var(--text-muted)', padding: '4px 0' }}>Loading…</div>
+          ) : (
+            activeTracks.map((t) => (
+              <div key={t.id} style={{ marginBottom: 14 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                  <span style={{ fontSize: '12px', fontWeight: 600 }}>{t.name}</span>
+                  {t.stemCategory && (
+                    <span style={{ fontSize: '10px', color: 'var(--text-secondary)', background: 'var(--bg-hover)', padding: '1px 6px', borderRadius: '999px', border: '1px solid var(--border)' }}>
+                      {t.stemCategory}
+                    </span>
+                  )}
+                </div>
+                {stemData[t.id] ? (
+                  <AudioPlayer src={stemData[t.id].url} waveformData={stemData[t.id].waveformData} />
+                ) : (
+                  <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>No audio</span>
+                )}
+              </div>
+            ))
+          )}
+        </div>
+      )}
     </div>
   );
 }
