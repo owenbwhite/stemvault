@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react';
 import { generateClient } from 'aws-amplify/data';
 import { uploadData } from 'aws-amplify/storage';
+import { fetchAuthSession } from 'aws-amplify/auth';
 import { useAuthenticator } from '@aws-amplify/ui-react';
 import type { Schema } from '../../amplify/data/resource';
 
@@ -161,7 +162,9 @@ export function BulkUploadModal({ projectId, existingTrackCount, onClose }: Bulk
     await Promise.all(
       rows.map(async (row, idx) => {
         if (row.status !== 'idle') return;
-        const userId = user?.userId ?? 'unknown';
+        // Identity Pool sub matches {entity_id} in storage access policy
+        const { identityId } = await fetchAuthSession();
+        const entityId = identityId ?? user?.userId ?? 'unknown';
 
         try {
           // 1. Create Track
@@ -179,7 +182,7 @@ export function BulkUploadModal({ projectId, existingTrackCount, onClose }: Bulk
 
           // 2. Upload file
           const ext = row.file.name.split('.').pop() ?? 'wav';
-          const s3Key = `stems/${userId}/tracks/${trackId}/${Date.now()}.${ext}`;
+          const s3Key = `stems/${entityId}/tracks/${trackId}/${Date.now()}.${ext}`;
 
           updateRow(idx, 'status', 'uploading');
 

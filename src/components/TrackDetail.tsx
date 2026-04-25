@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { generateClient } from 'aws-amplify/data';
 import { uploadData, getUrl } from 'aws-amplify/storage';
+import { fetchAuthSession } from 'aws-amplify/auth';
 import { useAuthenticator } from '@aws-amplify/ui-react';
 import type { Schema } from '../../amplify/data/resource';
 import { AudioPlayer } from './AudioPlayer';
@@ -18,7 +19,7 @@ interface VersionWithUrl extends Version {
 
 export function TrackDetail() {
   const { projectId, trackId } = useParams<{ projectId: string; trackId: string }>();
-  const { user } = useAuthenticator((ctx) => [ctx.user]);
+  useAuthenticator();
 
   const [track, setTrack] = useState<Track | null>(null);
   const [versions, setVersions] = useState<VersionWithUrl[]>([]);
@@ -232,7 +233,6 @@ export function TrackDetail() {
       {showUpload && (
         <UploadModal
           trackId={trackId!}
-          userId={user?.userId ?? ''}
           trackType={track.type ?? 'AUDIO'}
           onClose={() => setShowUpload(false)}
         />
@@ -267,12 +267,11 @@ function VersionMeta({ version }: { version: Version }) {
 
 interface UploadModalProps {
   trackId: string;
-  userId: string;
   trackType: string;
   onClose: () => void;
 }
 
-function UploadModal({ trackId, userId, trackType, onClose }: UploadModalProps) {
+function UploadModal({ trackId, trackType, onClose }: UploadModalProps) {
   const [file, setFile] = useState<File | null>(null);
   const [label, setLabel] = useState('');
   const [notes, setNotes] = useState('');
@@ -292,11 +291,11 @@ function UploadModal({ trackId, userId, trackType, onClose }: UploadModalProps) 
     setProgress(0);
 
     try {
-      // Path: stems/{userId}/tracks/{trackId}/{timestamp}.{ext}
-      // Matches stemsStorage access path: stems/{entity_id}/*
       const ext = file.name.split('.').pop() ?? 'wav';
       const timestamp = Date.now();
-      const s3Key = `stems/${userId}/tracks/${trackId}/${timestamp}.${ext}`;
+      const { identityId } = await fetchAuthSession();
+      const entityId = identityId ?? 'unknown';
+      const s3Key = `stems/${entityId}/tracks/${trackId}/${timestamp}.${ext}`;
 
       await uploadData({
         path: s3Key,
