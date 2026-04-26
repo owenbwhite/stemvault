@@ -4,14 +4,13 @@ import { generateClient } from 'aws-amplify/data';
 import { getUrl } from 'aws-amplify/storage';
 import type { Schema } from '../../amplify/data/resource';
 import { MixPlayer, type StemTrack } from './MixPlayer';
+import { type Snapshot, encodeSnapshot, decodeSnapshot } from './snapshotUtils';
 
 const client = generateClient<Schema>();
 
 type PullRequest = Schema['PullRequest']['type'];
 type Track = Schema['Track']['type'];
 type Version = Schema['Version']['type'];
-
-type Snapshot = Record<string, string>; // trackId → versionId
 
 export function PullRequestDetail() {
   const { projectId, prId } = useParams<{ projectId: string; prId: string }>();
@@ -38,7 +37,7 @@ export function PullRequestDetail() {
       const mainBranchId = projRes.data?.mainBranchId;
       if (mainBranchId) {
         const branchRes = await client.models.Branch.get({ id: mainBranchId });
-        setMainSnapshot((branchRes.data?.snapshot as Snapshot) ?? {});
+        setMainSnapshot(decodeSnapshot(branchRes.data?.snapshot));
       }
 
       // Load all tracks for this project
@@ -49,7 +48,7 @@ export function PullRequestDetail() {
       setTracks(stemTracks);
 
       // Collect all version IDs from both main and proposed snapshots
-      const proposed = (prData?.proposedSnapshot as Snapshot) ?? {};
+      const proposed = decodeSnapshot(prData?.proposedSnapshot);
       const allVersionIds = new Set([
         ...Object.values(proposed),
       ]);
@@ -69,7 +68,7 @@ export function PullRequestDetail() {
   const handlePlayProposed = async () => {
     if (!pr) return;
     setLoadingMix(true);
-    const proposed = (pr.proposedSnapshot as Snapshot) ?? {};
+    const proposed = decodeSnapshot(pr.proposedSnapshot);
     const stems = await Promise.all(
       Object.entries(proposed).map(async ([trackId, versionId]) => {
         const track = tracks.find((t) => t.id === trackId);
@@ -93,7 +92,7 @@ export function PullRequestDetail() {
     if (!pr || !projectId) return;
     setMerging(true);
     try {
-      const proposed = (pr.proposedSnapshot as Snapshot) ?? {};
+      const proposed = decodeSnapshot(pr.proposedSnapshot);
 
       // Update each track's activeVersionId
       await Promise.all(
@@ -107,10 +106,10 @@ export function PullRequestDetail() {
       const mainBranchId = projRes.data?.mainBranchId;
       if (mainBranchId) {
         const branchRes = await client.models.Branch.get({ id: mainBranchId });
-        const currentSnapshot = (branchRes.data?.snapshot as Snapshot) ?? {};
+        const currentSnapshot = decodeSnapshot(branchRes.data?.snapshot);
         await client.models.Branch.update({
           id: mainBranchId,
-          snapshot: { ...currentSnapshot, ...proposed },
+          snapshot: encodeSnapshot({ ...currentSnapshot, ...proposed }),
         });
       }
 
@@ -137,7 +136,7 @@ export function PullRequestDetail() {
   if (loading) return <div style={{ color: 'var(--text-muted)', padding: '40px 0' }}>Loading…</div>;
   if (!pr) return <div className="empty-state"><p>PR not found.</p><Link to={`/project/${projectId}`}>Back</Link></div>;
 
-  const proposed = (pr.proposedSnapshot as Snapshot) ?? {};
+  const proposed = decodeSnapshot(pr.proposedSnapshot);
   const isOpen = pr.status === 'OPEN';
 
   const statusColor = pr.status === 'MERGED'

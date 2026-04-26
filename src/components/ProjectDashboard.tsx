@@ -5,12 +5,13 @@ import { getUrl } from 'aws-amplify/storage';
 import type { Schema } from '../../amplify/data/resource';
 import { MixPlayer, type StemTrack } from './MixPlayer';
 import { PROJECT_TEMPLATES, type ProjectTemplate } from './templates';
+import { decodeSnapshot } from './snapshotUtils';
 
 const client = generateClient<Schema>();
 
 type Project = Schema['Project']['type'];
 type Track = Schema['Track']['type'];
-type Snapshot = Record<string, string>;
+
 
 interface NewProjectForm {
   title: string;
@@ -243,7 +244,7 @@ function ProjectCard({ project, onClick, onDelete }: {
       setLoadingMix(true);
       try {
         const branchRes = await client.models.Branch.get({ id: project.mainBranchId });
-        const snapshot = (branchRes.data?.snapshot as Snapshot) ?? {};
+        const snapshot = decodeSnapshot(branchRes.data?.snapshot);
 
         // Load tracks to get names/categories
         const trackRes = await client.models.Track.list({

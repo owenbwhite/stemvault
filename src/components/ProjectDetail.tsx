@@ -3,6 +3,7 @@ import { useParams, useNavigate, Link } from 'react-router-dom';
 import { generateClient } from 'aws-amplify/data';
 import { getUrl } from 'aws-amplify/storage';
 import type { Schema } from '../../amplify/data/resource';
+import { type Snapshot, encodeSnapshot, decodeSnapshot } from './snapshotUtils';
 import { BulkUploadModal } from './BulkUploadModal';
 import { MixPlayer, type StemTrack } from './MixPlayer';
 
@@ -12,7 +13,7 @@ type Project = Schema['Project']['type'];
 type Track = Schema['Track']['type'];
 type Branch = Schema['Branch']['type'];
 type PullRequest = Schema['PullRequest']['type'];
-type Snapshot = Record<string, string>;
+
 
 export function ProjectDetail() {
   const { projectId } = useParams<{ projectId: string }>();
@@ -79,7 +80,7 @@ export function ProjectDetail() {
         projectId,
         name: 'main',
         isMain: true,
-        snapshot,
+        snapshot: encodeSnapshot(snapshot),
       });
       if (branchRes.data) {
         await client.models.Project.update({ id: projectId, mainBranchId: branchRes.data.id });
@@ -114,8 +115,8 @@ export function ProjectDetail() {
   };
 
   const loadMasterMix = async (branch: Branch) => {
-    const snapshot = branch.snapshot as Snapshot;
-    if (!snapshot || Object.keys(snapshot).length === 0) return;
+    const snapshot = decodeSnapshot(branch.snapshot);
+    if (Object.keys(snapshot).length === 0) return;
     setLoadingMasterMix(true);
     const results = await Promise.all(
       Object.entries(snapshot).map(async ([trackId, versionId]) => {
@@ -144,15 +145,14 @@ export function ProjectDetail() {
     const snapshot: Snapshot = {};
     for (const t of stemTracks) if (t.activeVersionId) snapshot[t.id] = t.activeVersionId;
 
+    const encoded = encodeSnapshot(snapshot);
     if (mainBranch) {
-      await client.models.Branch.update({ id: mainBranch.id, snapshot });
-      const updated = { ...mainBranch, snapshot };
-      setMainBranch(updated);
-      // Reload master mix with updated snapshot
+      await client.models.Branch.update({ id: mainBranch.id, snapshot: encoded });
+      setMainBranch({ ...mainBranch, snapshot: encoded });
       setMasterMixStems(null);
       setMasterMixSnapshotKey(null);
     } else {
-      const res = await client.models.Branch.create({ projectId, name: 'main', isMain: true, snapshot });
+      const res = await client.models.Branch.create({ projectId, name: 'main', isMain: true, snapshot: encoded });
       if (res.data) {
         await client.models.Project.update({ id: projectId, mainBranchId: res.data.id });
         setMainBranch(res.data);
@@ -227,7 +227,7 @@ export function ProjectDetail() {
             </span>
             {mainBranch && (
               <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
-                main · {Object.keys((mainBranch.snapshot as Snapshot) ?? {}).length} stems
+                main · {Object.keys(decodeSnapshot(mainBranch.snapshot)).length} stems
               </span>
             )}
           </div>
@@ -246,7 +246,7 @@ export function ProjectDetail() {
               </button>
             ) : (
               <>
-                {masterMixSnapshotKey !== JSON.stringify(mainBranch.snapshot) && (
+                {masterMixSnapshotKey !== JSON.stringify(decodeSnapshot(mainBranch.snapshot)) && (
                   <button
                     className="btn-secondary btn-sm"
                     onClick={() => loadMasterMix(mainBranch)}
@@ -460,7 +460,7 @@ function CreatePRModal({ projectId, tracks, onClose, onCreated }: CreatePRModalP
         projectId,
         name: `pr/${title.trim().toLowerCase().replace(/\s+/g, '-')}`,
         isMain: false,
-        snapshot: selectedVersions,
+        snapshot: encodeSnapshot(selectedVersions),
       });
       if (branchRes.errors) throw new Error(branchRes.errors[0].message);
 
@@ -469,7 +469,7 @@ function CreatePRModal({ projectId, tracks, onClose, onCreated }: CreatePRModalP
         fromBranchId: branchRes.data!.id,
         title: title.trim(),
         description: description.trim() || undefined,
-        proposedSnapshot: selectedVersions,
+        proposedSnapshot: encodeSnapshot(selectedVersions),
         status: 'OPEN',
       });
       if (prRes.errors) throw new Error(prRes.errors[0].message);
