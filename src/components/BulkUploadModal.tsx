@@ -166,6 +166,7 @@ export function BulkUploadModal({ trackId, existingStemCount, onClose }: BulkUpl
             stemCategory: row.category,
             trackId,
             sortOrder: existingStemCount + idx,
+            isActive: true,
           });
           if (stemResult.errors || !stemResult.data) {
             throw new Error(stemResult.errors?.[0]?.message ?? 'Failed to create stem');

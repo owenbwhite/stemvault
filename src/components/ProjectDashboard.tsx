@@ -109,6 +109,7 @@ export function ProjectDashboard() {
                 type: t.type,
                 stemCategory: t.stemCategory,
                 sortOrder: i,
+                isActive: true,
               })
             )
           );

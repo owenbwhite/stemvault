@@ -13,6 +13,7 @@ const client = generateClient<Schema>();
 type Track = Schema['Track']['type'];
 type Stem = Schema['Stem']['type'];
 type EditRequest = Schema['EditRequest']['type'];
+type StemType = 'AUDIO' | 'MIDI' | 'INSTRUMENT' | 'MIX';
 
 export function TrackDetail() {
   const { projectId, trackId } = useParams<{ projectId: string; trackId: string }>();
@@ -22,6 +23,7 @@ export function TrackDetail() {
   const [track, setTrack] = useState<Track | null>(null);
   const [stems, setStems] = useState<Stem[]>([]);
   const [editRequests, setEditRequests] = useState<EditRequest[]>([]);
+  const [projectOwnerId, setProjectOwnerId] = useState<string | null>(null);
   const [masterMixStems, setMasterMixStems] = useState<StemTrack[] | null>(null);
   const [masterMixSnapshotKey, setMasterMixSnapshotKey] = useState<string | null>(null);
   const [loadingMasterMix, setLoadingMasterMix] = useState(false);
@@ -29,9 +31,11 @@ export function TrackDetail() {
   const [showAddStem, setShowAddStem] = useState(false);
   const [showCreateEdit, setShowCreateEdit] = useState(false);
   const [newStemName, setNewStemName] = useState('');
-  const [newStemType, setNewStemType] = useState<'AUDIO' | 'MIDI' | 'INSTRUMENT' | 'MIX'>('AUDIO');
+  const [newStemType, setNewStemType] = useState<StemType>('AUDIO');
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(true);
+
+  const isOwner = !!user?.userId && !!projectOwnerId && user.userId === projectOwnerId;
 
   useEffect(() => {
     if (!trackId) return;
@@ -39,6 +43,11 @@ export function TrackDetail() {
       setTrack(res.data);
       setLoading(false);
     });
+    if (projectId) {
+      client.models.Project.get({ id: projectId }).then((res) => {
+        setProjectOwnerId(res.data?.ownerId ?? null);
+      });
+    }
 
     const stemSub = client.models.Stem.observeQuery({
       filter: { trackId: { eq: trackId } },
@@ -82,7 +91,7 @@ export function TrackDetail() {
 
   const handleCommitToMain = async () => {
     if (!trackId) return;
-    const activeStemsList = stems.filter((s) => s.type !== 'MIX' && s.activeVersionId);
+    const activeStemsList = stems.filter((s) => s.type !== 'MIX' && s.activeVersionId && s.isActive !== false);
     const snapshot: Snapshot = {};
     for (const s of activeStemsList) if (s.activeVersionId) snapshot[s.id] = s.activeVersionId;
     const encoded = encodeSnapshot(snapshot);
@@ -90,6 +99,11 @@ export function TrackDetail() {
     setTrack((t) => t ? { ...t, mainSnapshot: encoded } : t);
     setMasterMixStems(null);
     setMasterMixSnapshotKey(null);
+  };
+
+  const handleToggleStemActive = async (e: React.MouseEvent, stem: Stem) => {
+    e.stopPropagation();
+    await client.models.Stem.update({ id: stem.id, isActive: stem.isActive === false ? true : false });
   };
 
   const handleAddStem = async () => {
@@ -101,6 +115,7 @@ export function TrackDetail() {
         type: newStemType,
         trackId,
         sortOrder: stems.length,
+        isActive: true,
       });
       setNewStemName('');
       setNewStemType('AUDIO');
@@ -146,16 +161,20 @@ export function TrackDetail() {
           </div>
         </div>
         <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-          <button className="btn-secondary" onClick={() => setShowAddStem(true)}>+ Add stem</button>
-          <button className="btn-secondary" onClick={() => setShowBulkUpload(true)}>↑ Upload stems</button>
-          <button
-            className="btn-secondary"
-            onClick={handleCommitToMain}
-            disabled={activeCount === 0}
-            title="Save current active stem versions to main"
-          >
-            ↑ Commit to main
-          </button>
+          {isOwner && (
+            <>
+              <button className="btn-secondary" onClick={() => setShowAddStem(true)}>+ Add stem</button>
+              <button className="btn-secondary" onClick={() => setShowBulkUpload(true)}>↑ Upload stems</button>
+              <button
+                className="btn-secondary"
+                onClick={handleCommitToMain}
+                disabled={activeCount === 0}
+                title="Save current active stem versions to main"
+              >
+                ↑ Commit to main
+              </button>
+            </>
+          )}
           <button
             className="btn-primary"
             onClick={() => setShowCreateEdit(true)}
@@ -240,8 +259,10 @@ export function TrackDetail() {
           <StemRow
             key={stem.id}
             stem={stem}
+            isOwner={isOwner}
             onClick={() => navigate(`/project/${projectId}/track/${trackId}/stem/${stem.id}`)}
             onDelete={(e) => handleDeleteStem(e, stem.id)}
+            onToggleActive={(e) => handleToggleStemActive(e, stem)}
           />
         ))
       )}
@@ -259,6 +280,7 @@ export function TrackDetail() {
           trackId={trackId!}
           createdBy={user?.userId ?? 'unknown'}
           stems={stemItems}
+          mainSnapshot={mainSnapshot}
           onClose={() => setShowCreateEdit(false)}
           onCreated={(er) => {
             setShowCreateEdit(false);
@@ -318,17 +340,20 @@ function EditRequestRow({ er, onClick }: { er: EditRequest; onClick: () => void 
   );
 }
 
-function StemRow({ stem, onClick, onDelete }: {
+function StemRow({ stem, isOwner, onClick, onDelete, onToggleActive }: {
   stem: Stem;
+  isOwner: boolean;
   onClick: () => void;
   onDelete: (e: React.MouseEvent) => void;
+  onToggleActive: (e: React.MouseEvent) => void;
 }) {
   const typeClass: Record<string, string> = {
     AUDIO: 'badge-audio', MIDI: 'badge-midi', INSTRUMENT: 'badge-instrument', MIX: 'badge-mix',
   };
+  const inactive = stem.isActive === false;
 
   return (
-    <div className="track-row" onClick={onClick} style={{ cursor: 'pointer' }}>
+    <div className="track-row" onClick={onClick} style={{ cursor: 'pointer', opacity: inactive ? 0.5 : 1 }}>
       <div className="track-name">{stem.name}</div>
       <span className={`badge ${typeClass[stem.type ?? 'AUDIO']}`}>{stem.type ?? 'AUDIO'}</span>
       {stem.stemCategory && (
@@ -336,12 +361,26 @@ function StemRow({ stem, onClick, onDelete }: {
           {stem.stemCategory}
         </span>
       )}
-      {stem.activeVersionId && (
+      {inactive ? (
+        <span style={{ fontSize: '10px', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>⊘ inactive</span>
+      ) : stem.activeVersionId ? (
         <span style={{ fontSize: '10px', color: 'var(--accent-green)', fontFamily: 'var(--font-mono)' }}>● active</span>
-      )}
+      ) : null}
       <div className="track-controls">
         <button className="btn-secondary btn-sm" onClick={(e) => { e.stopPropagation(); onClick(); }}>Open →</button>
-        <button className="btn-ghost btn-sm" onClick={onDelete} style={{ color: 'var(--text-muted)' }} title="Delete stem">✕</button>
+        {isOwner && (
+          <>
+            <button
+              className="btn-ghost btn-sm"
+              onClick={onToggleActive}
+              style={{ color: inactive ? 'var(--accent-green)' : 'var(--text-muted)', fontSize: '11px' }}
+              title={inactive ? 'Reactivate stem' : 'Deactivate stem'}
+            >
+              {inactive ? 'Reactivate' : 'Deactivate'}
+            </button>
+            <button className="btn-ghost btn-sm" onClick={onDelete} style={{ color: 'var(--text-muted)' }} title="Delete stem">✕</button>
+          </>
+        )}
       </div>
     </div>
   );
@@ -351,18 +390,33 @@ interface CreateEditModalProps {
   trackId: string;
   createdBy: string;
   stems: Stem[];
+  mainSnapshot: Snapshot;
   onClose: () => void;
   onCreated: (er: EditRequest) => void;
 }
 
-function CreateEditModal({ trackId, createdBy, stems, onClose, onCreated }: CreateEditModalProps) {
+function CreateEditModal({ trackId, createdBy, stems, mainSnapshot, onClose, onCreated }: CreateEditModalProps) {
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
-  const [selectedVersions, setSelectedVersions] = useState<Snapshot>(
-    Object.fromEntries(stems.filter((s) => s.activeVersionId).map((s) => [s.id, s.activeVersionId!]))
-  );
+  // Pre-populate from mainSnapshot. Stems in main start selected with their main version.
+  // Stems with a newer activeVersionId (changed) use the active version.
+  // New stems (activeVersionId but not in main) start unchecked.
+  const [selectedVersions, setSelectedVersions] = useState<Snapshot>(() => {
+    const init: Snapshot = {};
+    for (const s of stems) {
+      if (mainSnapshot[s.id]) {
+        // In main: use activeVersionId if available (may be a new version), else main version
+        init[s.id] = s.activeVersionId ?? mainSnapshot[s.id];
+      }
+      // Not in main: leave unchecked (user must explicitly add)
+    }
+    return init;
+  });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // All stems relevant to this modal: in main OR has an active version
+  const relevantStems = stems.filter((s) => mainSnapshot[s.id] || s.activeVersionId);
 
   const handleCreate = async () => {
     if (!title.trim()) return;
@@ -419,32 +473,46 @@ function CreateEditModal({ trackId, createdBy, stems, onClose, onCreated }: Crea
             onChange={(e) => setDescription(e.target.value)} style={{ resize: 'vertical' }} />
         </div>
 
-        <p className="form-label" style={{ marginBottom: 8 }}>Stem versions to propose</p>
+        <p className="form-label" style={{ marginBottom: 8 }}>Proposed mix</p>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 16 }}>
-          {stems.filter((s) => s.activeVersionId).map((s) => (
-            <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <span style={{ fontSize: '12px', color: 'var(--text-primary)', width: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {s.name}
-              </span>
-              {s.stemCategory && (
-                <span style={{ fontSize: '10px', color: 'var(--text-muted)', background: 'var(--bg-hover)', padding: '1px 6px', borderRadius: '999px', border: '1px solid var(--border)', flexShrink: 0 }}>
-                  {s.stemCategory}
+          {relevantStems.map((s) => {
+            const inMain = !!mainSnapshot[s.id];
+            const isNew = !inMain && !!s.activeVersionId;
+            const isChanged = inMain && s.activeVersionId && s.activeVersionId !== mainSnapshot[s.id];
+            const versionForProposal = s.activeVersionId ?? mainSnapshot[s.id];
+
+            return (
+              <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <span style={{ fontSize: '12px', color: 'var(--text-primary)', width: 130, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {s.name}
                 </span>
-              )}
-              <input
-                type="checkbox"
-                checked={!!selectedVersions[s.id]}
-                onChange={(e) => {
-                  if (e.target.checked) {
-                    setSelectedVersions((prev) => ({ ...prev, [s.id]: s.activeVersionId! }));
-                  } else {
-                    setSelectedVersions((prev) => { const n = { ...prev }; delete n[s.id]; return n; });
-                  }
-                }}
-                style={{ accentColor: 'var(--accent)', marginLeft: 'auto' }}
-              />
-            </div>
-          ))}
+                {s.stemCategory && (
+                  <span style={{ fontSize: '10px', color: 'var(--text-muted)', background: 'var(--bg-hover)', padding: '1px 6px', borderRadius: '999px', border: '1px solid var(--border)', flexShrink: 0 }}>
+                    {s.stemCategory}
+                  </span>
+                )}
+                {isNew && (
+                  <span style={{ fontSize: '10px', fontWeight: 600, color: 'var(--accent-green)', flexShrink: 0 }}>new</span>
+                )}
+                {isChanged && (
+                  <span style={{ fontSize: '10px', fontWeight: 600, color: 'var(--accent)', flexShrink: 0 }}>updated</span>
+                )}
+                <input
+                  type="checkbox"
+                  checked={!!selectedVersions[s.id]}
+                  onChange={(e) => {
+                    if (e.target.checked && versionForProposal) {
+                      setSelectedVersions((prev) => ({ ...prev, [s.id]: versionForProposal }));
+                    } else {
+                      setSelectedVersions((prev) => { const n = { ...prev }; delete n[s.id]; return n; });
+                    }
+                  }}
+                  disabled={!versionForProposal}
+                  style={{ accentColor: 'var(--accent)', marginLeft: 'auto', flexShrink: 0 }}
+                />
+              </div>
+            );
+          })}
         </div>
 
         {error && <p style={{ color: 'var(--accent-red)', fontSize: '13px', margin: '0 0 8px' }}>{error}</p>}

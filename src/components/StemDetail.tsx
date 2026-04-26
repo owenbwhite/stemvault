@@ -3,6 +3,7 @@ import { useParams, Link } from 'react-router-dom';
 import { generateClient } from 'aws-amplify/data';
 import { uploadData, getUrl } from 'aws-amplify/storage';
 import { fetchAuthSession } from 'aws-amplify/auth';
+import { useAuthenticator } from '@aws-amplify/ui-react';
 import type { Schema } from '../../amplify/data/resource';
 import { AudioPlayer } from './AudioPlayer';
 import { MidiDiff } from './MidiDiff';
@@ -18,13 +19,19 @@ interface VersionWithUrl extends StemVersion {
 
 export function StemDetail() {
   const { projectId, trackId, stemId } = useParams<{ projectId: string; trackId: string; stemId: string }>();
+  const { user } = useAuthenticator((ctx) => [ctx.user]);
 
   const [stem, setStem] = useState<Stem | null>(null);
   const [versions, setVersions] = useState<VersionWithUrl[]>([]);
   const [activeVersionId, setActiveVersionId] = useState<string | null>(null);
   const [selectedVersionId, setSelectedVersionId] = useState<string | null>(null);
   const [diffVersionId, setDiffVersionId] = useState<string | null>(null);
+  const [projectOwnerId, setProjectOwnerId] = useState<string | null>(null);
   const [showUpload, setShowUpload] = useState(false);
+  const [showEditMeta, setShowEditMeta] = useState(false);
+  const [editName, setEditName] = useState('');
+  const [editCategory, setEditCategory] = useState('');
+  const [savingMeta, setSavingMeta] = useState(false);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -34,6 +41,12 @@ export function StemDetail() {
       setActiveVersionId(res.data?.activeVersionId ?? null);
       setLoading(false);
     });
+
+    if (projectId) {
+      client.models.Project.get({ id: projectId }).then((res) => {
+        setProjectOwnerId(res.data?.ownerId ?? null);
+      });
+    }
 
     const sub = client.models.StemVersion.observeQuery({
       filter: { stemId: { eq: stemId } },
@@ -61,12 +74,45 @@ export function StemDetail() {
       },
     });
     return () => sub.unsubscribe();
-  }, [stemId, selectedVersionId]);
+  }, [stemId, selectedVersionId, projectId]);
+
+  const isOwner = !!user?.userId && !!projectOwnerId && user.userId === projectOwnerId;
+  const inactive = stem?.isActive === false;
 
   const handleHotswap = async (versionId: string) => {
     if (!stemId) return;
     await client.models.Stem.update({ id: stemId, activeVersionId: versionId });
     setActiveVersionId(versionId);
+  };
+
+  const handleToggleActive = async () => {
+    if (!stemId || !stem) return;
+    const newIsActive = inactive ? true : false;
+    const res = await client.models.Stem.update({ id: stemId, isActive: newIsActive });
+    if (res.data) setStem(res.data);
+  };
+
+  const openEditMeta = () => {
+    if (!stem) return;
+    setEditName(stem.name);
+    setEditCategory(stem.stemCategory ?? '');
+    setShowEditMeta(true);
+  };
+
+  const handleUpdateMeta = async () => {
+    if (!stemId || !editName.trim()) return;
+    setSavingMeta(true);
+    try {
+      const res = await client.models.Stem.update({
+        id: stemId,
+        name: editName.trim(),
+        stemCategory: editCategory.trim() || undefined,
+      });
+      if (res.data) setStem(res.data);
+      setShowEditMeta(false);
+    } finally {
+      setSavingMeta(false);
+    }
   };
 
   const selectedVersion = versions.find((v) => v.id === selectedVersionId);
@@ -90,16 +136,35 @@ export function StemDetail() {
       <Link to={`/project/${projectId}/track/${trackId}`} className="back-link">← Track</Link>
 
       <div className="page-header">
-        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-          <h1 className="page-title">{stem.name}</h1>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+          <h1 className="page-title" style={{ opacity: inactive ? 0.5 : 1 }}>{stem.name}</h1>
           <span className={`badge ${typeClass[stem.type ?? 'AUDIO']}`}>{stem.type ?? 'AUDIO'}</span>
           {stem.stemCategory && (
             <span style={{ fontSize: '11px', color: 'var(--text-muted)', background: 'var(--bg-hover)', padding: '2px 8px', borderRadius: '999px', border: '1px solid var(--border)' }}>
               {stem.stemCategory}
             </span>
           )}
+          {inactive && (
+            <span style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-muted)' }}>⊘ Inactive</span>
+          )}
         </div>
-        <button className="btn-primary" onClick={() => setShowUpload(true)}>+ Upload version</button>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+          {isOwner && (
+            <>
+              <button className="btn-ghost btn-sm" onClick={openEditMeta} style={{ color: 'var(--text-muted)' }}>
+                Edit
+              </button>
+              <button
+                className="btn-ghost btn-sm"
+                onClick={handleToggleActive}
+                style={{ color: inactive ? 'var(--accent-green)' : 'var(--text-muted)' }}
+              >
+                {inactive ? 'Reactivate' : 'Deactivate'}
+              </button>
+              <button className="btn-primary" onClick={() => setShowUpload(true)}>+ Upload version</button>
+            </>
+          )}
+        </div>
       </div>
 
       {activeVersion?.playbackUrl && (
@@ -158,11 +223,11 @@ export function StemDetail() {
               <div style={{ display: 'flex', gap: '6px', flexShrink: 0 }}>
                 {isActive ? (
                   <span style={{ fontSize: '11px', color: 'var(--accent-green)', padding: '2px 8px' }}>active</span>
-                ) : (
+                ) : isOwner ? (
                   <button className="btn-secondary btn-sm" onClick={(e) => { e.stopPropagation(); handleHotswap(v.id); }} title="Set as active version">
                     Hotswap ⚡
                   </button>
-                )}
+                ) : null}
                 <button
                   className={`btn-sm ${isDiff ? 'btn-primary' : 'btn-ghost'}`}
                   onClick={(e) => { e.stopPropagation(); setDiffVersionId(isDiff ? null : v.id); }}
@@ -199,6 +264,38 @@ export function StemDetail() {
 
       {showUpload && (
         <UploadModal stemId={stemId!} stemType={stem.type ?? 'AUDIO'} onClose={() => setShowUpload(false)} />
+      )}
+
+      {showEditMeta && (
+        <div className="modal-overlay" onClick={() => setShowEditMeta(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h2 className="modal-title">Edit stem</h2>
+            <div className="form-group">
+              <label className="form-label">Name *</label>
+              <input
+                type="text"
+                value={editName}
+                onChange={(e) => setEditName(e.target.value)}
+                autoFocus
+              />
+            </div>
+            <div className="form-group">
+              <label className="form-label">Category</label>
+              <input
+                type="text"
+                placeholder="e.g. Drums, Bass, Lead, Pad"
+                value={editCategory}
+                onChange={(e) => setEditCategory(e.target.value)}
+              />
+            </div>
+            <div className="modal-actions">
+              <button className="btn-secondary" onClick={() => setShowEditMeta(false)} disabled={savingMeta}>Cancel</button>
+              <button className="btn-primary" onClick={handleUpdateMeta} disabled={savingMeta || !editName.trim()}>
+                {savingMeta ? 'Saving…' : 'Save'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </>
   );
