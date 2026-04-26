@@ -31,6 +31,7 @@ const schema = a.schema({
       originalTrackId: a.id(),
       originalProjectId: a.id(),
       stems: a.hasMany('Stem', 'trackId'),
+      edits: a.hasMany('Edit', 'trackId'),
       editRequests: a.hasMany('EditRequest', 'trackId'),
     })
     .authorization((allow) => [
