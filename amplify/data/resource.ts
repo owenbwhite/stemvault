@@ -49,6 +49,7 @@ const schema = a.schema({
       stemCategory: a.string(),
       sortOrder: a.integer(),
       activeVersionId: a.id(),
+      isActive: a.boolean(),
       versions: a.hasMany('StemVersion', 'stemId'),
     })
     .authorization((allow) => [

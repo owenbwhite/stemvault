@@ -80,18 +80,19 @@ export function EditRequestDetail() {
     try {
       const proposed = decodeSnapshot(er.proposedSnapshot);
 
+      // Full replacement — proposed IS the new main, not a patch on top of it.
+      // Stems absent from proposed are intentionally removed from the mix.
+      await client.models.Track.update({
+        id: trackId,
+        mainSnapshot: encodeSnapshot(proposed),
+      });
+
+      // Sync each stem's activeVersionId to match the new main
       await Promise.all(
         Object.entries(proposed).map(([stemId, versionId]) =>
           client.models.Stem.update({ id: stemId, activeVersionId: versionId })
         )
       );
-
-      const trackRes = await client.models.Track.get({ id: trackId });
-      const currentSnapshot = decodeSnapshot(trackRes.data?.mainSnapshot);
-      await client.models.Track.update({
-        id: trackId,
-        mainSnapshot: encodeSnapshot({ ...currentSnapshot, ...proposed }),
-      });
 
       await client.models.EditRequest.update({ id: er.id, status: 'MERGED' });
       navigate(`/project/${projectId}/track/${trackId}`);
@@ -112,6 +113,13 @@ export function EditRequestDetail() {
     setEr((p) => p ? { ...p, status: 'OPEN' } : p);
   };
 
+  const handleDelete = async () => {
+    if (!er) return;
+    if (!confirm('Delete this edit request? This cannot be undone.')) return;
+    await client.models.EditRequest.delete({ id: er.id });
+    navigate(`/project/${projectId}/track/${trackId}`);
+  };
+
   if (loading) return <div style={{ color: 'var(--text-muted)', padding: '40px 0' }}>Loading…</div>;
   if (!er) return (
     <div className="empty-state">
@@ -123,6 +131,9 @@ export function EditRequestDetail() {
   const proposed = decodeSnapshot(er.proposedSnapshot);
   const isOpen = er.status === 'OPEN';
   const statusColor = er.status === 'MERGED' ? 'var(--accent-green)' : er.status === 'CLOSED' ? 'var(--text-muted)' : 'var(--accent)';
+
+  // Stems removed by this proposal (in current main but absent from proposed)
+  const removedStemIds = Object.keys(mainSnapshot).filter((id) => !proposed[id]);
 
   return (
     <>
@@ -140,7 +151,7 @@ export function EditRequestDetail() {
             <p style={{ margin: '4px 0 0', color: 'var(--text-secondary)', fontSize: '13px' }}>{er.description}</p>
           )}
         </div>
-        <div style={{ display: 'flex', gap: 8 }}>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
           <button className="btn-secondary" onClick={handlePlayProposed} disabled={loadingMix || Object.keys(proposed).length === 0}>
             {loadingMix ? 'Loading…' : '▶ Play proposed mix'}
           </button>
@@ -148,12 +159,15 @@ export function EditRequestDetail() {
             <>
               <button className="btn-ghost btn-sm" onClick={handleClose} style={{ color: 'var(--text-muted)' }}>Close</button>
               <button className="btn-primary" onClick={handleMerge} disabled={merging}>
-                {merging ? 'Merging…' : '⎇ Merge to main'}
+                {merging ? 'Committing…' : '⎇ Commit to main'}
               </button>
             </>
           )}
           {er.status === 'CLOSED' && (
             <button className="btn-secondary" onClick={handleReopen}>Reopen</button>
+          )}
+          {er.status !== 'MERGED' && (
+            <button className="btn-ghost btn-sm" onClick={handleDelete} style={{ color: 'var(--accent-red)' }}>Delete</button>
           )}
         </div>
       </div>
@@ -166,51 +180,81 @@ export function EditRequestDetail() {
       )}
 
       <p className="section-title">
-        Changes ({Object.keys(proposed).length} stem{Object.keys(proposed).length !== 1 ? 's' : ''})
+        Changes ({Object.keys(proposed).length} stem{Object.keys(proposed).length !== 1 ? 's' : ''} in proposed mix
+        {removedStemIds.length > 0 && `, ${removedStemIds.length} removed`})
       </p>
 
-      {Object.keys(proposed).length === 0 ? (
+      {Object.keys(proposed).length === 0 && removedStemIds.length === 0 ? (
         <div className="empty-state"><p>No stem changes in this edit request.</p></div>
       ) : (
-        stems
-          .filter((s) => proposed[s.id])
-          .map((stem) => {
-            const proposedVersionId = proposed[stem.id];
-            const mainVersionId = mainSnapshot[stem.id];
-            const proposedVersion = versions[proposedVersionId];
-            const isNew = !mainVersionId;
-            const isChanged = mainVersionId && mainVersionId !== proposedVersionId;
+        <>
+          {/* Stems included in the proposed mix */}
+          {stems
+            .filter((s) => proposed[s.id])
+            .map((stem) => {
+              const proposedVersionId = proposed[stem.id];
+              const mainVersionId = mainSnapshot[stem.id];
+              const proposedVersion = versions[proposedVersionId];
+              const isNew = !mainVersionId;
+              const isChanged = mainVersionId && mainVersionId !== proposedVersionId;
 
+              return (
+                <div key={stem.id} className="version-row" style={{ display: 'flex', flexDirection: 'column', gap: 6, cursor: 'default' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                    <span className="version-label">{stem.name}</span>
+                    {stem.stemCategory && (
+                      <span style={{ fontSize: '10px', color: 'var(--text-muted)', background: 'var(--bg-hover)', padding: '1px 6px', borderRadius: '999px', border: '1px solid var(--border)' }}>
+                        {stem.stemCategory}
+                      </span>
+                    )}
+                    <span style={{
+                      fontSize: '10px', fontWeight: 600, padding: '1px 8px', borderRadius: '999px',
+                      background: isNew ? 'rgba(16,185,129,0.15)' : isChanged ? 'rgba(245,158,11,0.15)' : 'rgba(100,100,100,0.15)',
+                      color: isNew ? 'var(--accent-green)' : isChanged ? 'var(--accent)' : 'var(--text-muted)',
+                    }}>
+                      {isNew ? 'new' : isChanged ? 'changed' : 'unchanged'}
+                    </span>
+                  </div>
+                  <div style={{ fontSize: '12px', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', display: 'flex', gap: 12 }}>
+                    {mainVersionId && mainVersionId !== proposedVersionId && (
+                      <span style={{ color: 'var(--accent-red)' }}>− {mainVersionId.slice(0, 8)}</span>
+                    )}
+                    <span style={{ color: 'var(--accent-green)' }}>
+                      + {proposedVersionId.slice(0, 8)}
+                      {proposedVersion?.versionLabel ? ` · ${proposedVersion.versionLabel}` : ''}
+                      {proposedVersion?.notes ? ` — ${proposedVersion.notes}` : ''}
+                    </span>
+                  </div>
+                </div>
+              );
+            })}
+
+          {/* Stems intentionally removed from the mix */}
+          {removedStemIds.map((stemId) => {
+            const stem = stems.find((s) => s.id === stemId);
+            const mainVersionId = mainSnapshot[stemId];
             return (
-              <div key={stem.id} className="version-row" style={{ display: 'flex', flexDirection: 'column', gap: 6, cursor: 'default' }}>
+              <div key={stemId} className="version-row" style={{ display: 'flex', flexDirection: 'column', gap: 6, cursor: 'default', opacity: 0.6 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                  <span className="version-label">{stem.name}</span>
-                  {stem.stemCategory && (
+                  <span className="version-label">{stem?.name ?? stemId.slice(0, 8)}</span>
+                  {stem?.stemCategory && (
                     <span style={{ fontSize: '10px', color: 'var(--text-muted)', background: 'var(--bg-hover)', padding: '1px 6px', borderRadius: '999px', border: '1px solid var(--border)' }}>
                       {stem.stemCategory}
                     </span>
                   )}
-                  <span style={{
-                    fontSize: '10px', fontWeight: 600, padding: '1px 8px', borderRadius: '999px',
-                    background: isNew ? 'rgba(16,185,129,0.15)' : 'rgba(245,158,11,0.15)',
-                    color: isNew ? 'var(--accent-green)' : 'var(--accent)',
-                  }}>
-                    {isNew ? 'new' : isChanged ? 'changed' : 'unchanged'}
+                  <span style={{ fontSize: '10px', fontWeight: 600, padding: '1px 8px', borderRadius: '999px', background: 'rgba(239,68,68,0.15)', color: 'var(--accent-red)' }}>
+                    removed
                   </span>
                 </div>
-                <div style={{ fontSize: '12px', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', display: 'flex', gap: 12 }}>
-                  {mainVersionId && mainVersionId !== proposedVersionId && (
+                {mainVersionId && (
+                  <div style={{ fontSize: '12px', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
                     <span style={{ color: 'var(--accent-red)' }}>− {mainVersionId.slice(0, 8)}</span>
-                  )}
-                  <span style={{ color: 'var(--accent-green)' }}>
-                    + {proposedVersionId.slice(0, 8)}
-                    {proposedVersion?.versionLabel ? ` · ${proposedVersion.versionLabel}` : ''}
-                    {proposedVersion?.notes ? ` — ${proposedVersion.notes}` : ''}
-                  </span>
-                </div>
+                  </div>
+                )}
               </div>
             );
-          })
+          })}
+        </>
       )}
     </>
   );
