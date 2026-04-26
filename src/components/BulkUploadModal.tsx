@@ -2,7 +2,6 @@ import { useRef, useState } from 'react';
 import { generateClient } from 'aws-amplify/data';
 import { uploadData } from 'aws-amplify/storage';
 import { fetchAuthSession } from 'aws-amplify/auth';
-import { useAuthenticator } from '@aws-amplify/ui-react';
 import type { Schema } from '../../amplify/data/resource';
 
 const client = generateClient<Schema>();
@@ -69,9 +68,8 @@ export function classifyStem(filename: string): StemCategory {
   return 'Other';
 }
 
-function filenameToTrackName(filename: string): string {
+function filenameToStemName(filename: string): string {
   const base = filename.replace(/\.[^.]+$/, '');
-  // Strip leading track numbers: "01_", "001 - ", "01. "
   const trimmed = base.replace(/^\d+[\s_\-\.]+/, '');
   return trimmed
     .replace(/[_\-]+/g, ' ')
@@ -98,7 +96,7 @@ type UploadStatus = 'idle' | 'uploading' | 'done' | 'error';
 
 interface StemRow {
   file: File;
-  trackName: string;
+  stemName: string;
   category: StemCategory;
   fileType: 'AUDIO' | 'MIDI' | 'INSTRUMENT';
   status: UploadStatus;
@@ -109,29 +107,26 @@ interface StemRow {
 // ── Component ────────────────────────────────────────────────────────────────
 
 interface BulkUploadModalProps {
-  projectId: string;
-  existingTrackCount: number;
+  trackId: string;
+  existingStemCount: number;
   onClose: () => void;
 }
 
-export function BulkUploadModal({ projectId, existingTrackCount, onClose }: BulkUploadModalProps) {
-  const { user } = useAuthenticator((ctx) => [ctx.user]);
+export function BulkUploadModal({ trackId, existingStemCount, onClose }: BulkUploadModalProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [rows, setRows] = useState<StemRow[]>([]);
   const [uploading, setUploading] = useState(false);
   const dropRef = useRef<HTMLDivElement>(null);
 
   const addFiles = (files: FileList | File[]) => {
-    const accepted = Array.from(files).filter(
-      (f) => isAudio(f.name) || isMidi(f.name)
-    );
+    const accepted = Array.from(files).filter((f) => isAudio(f.name) || isMidi(f.name));
     setRows((prev) => {
       const existing = new Set(prev.map((r) => r.file.name));
       const next = accepted
         .filter((f) => !existing.has(f.name))
         .map((f) => ({
           file: f,
-          trackName: filenameToTrackName(f.name),
+          stemName: filenameToStemName(f.name),
           category: classifyStem(f.name),
           fileType: fileTypeFromName(f.name),
           status: 'idle' as UploadStatus,
@@ -145,9 +140,7 @@ export function BulkUploadModal({ projectId, existingTrackCount, onClose }: Bulk
     setRows((prev) => prev.map((r, i) => (i === idx ? { ...r, [key]: val } : r)));
   };
 
-  const removeRow = (idx: number) => {
-    setRows((prev) => prev.filter((_, i) => i !== idx));
-  };
+  const removeRow = (idx: number) => setRows((prev) => prev.filter((_, i) => i !== idx));
 
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
@@ -162,27 +155,26 @@ export function BulkUploadModal({ projectId, existingTrackCount, onClose }: Bulk
     await Promise.all(
       rows.map(async (row, idx) => {
         if (row.status !== 'idle') return;
-        // Identity Pool sub matches {entity_id} in storage access policy
         const { identityId } = await fetchAuthSession();
-        const entityId = identityId ?? user?.userId ?? 'unknown';
+        const entityId = identityId ?? 'unknown';
 
         try {
-          // 1. Create Track
-          const trackResult = await client.models.Track.create({
-            name: row.trackName,
+          // 1. Create Stem record
+          const stemResult = await client.models.Stem.create({
+            name: row.stemName,
             type: row.fileType,
             stemCategory: row.category,
-            projectId,
-            sortOrder: existingTrackCount + idx,
+            trackId,
+            sortOrder: existingStemCount + idx,
           });
-          if (trackResult.errors || !trackResult.data) {
-            throw new Error(trackResult.errors?.[0]?.message ?? 'Failed to create track');
+          if (stemResult.errors || !stemResult.data) {
+            throw new Error(stemResult.errors?.[0]?.message ?? 'Failed to create stem');
           }
-          const trackId = trackResult.data.id;
+          const stemId = stemResult.data.id;
 
           // 2. Upload file
           const ext = row.file.name.split('.').pop() ?? 'wav';
-          const s3Key = `stems/${entityId}/tracks/${trackId}/${Date.now()}.${ext}`;
+          const s3Key = `stems/${entityId}/stems/${stemId}/${Date.now()}.${ext}`;
 
           updateRow(idx, 'status', 'uploading');
 
@@ -192,16 +184,14 @@ export function BulkUploadModal({ projectId, existingTrackCount, onClose }: Bulk
             options: {
               contentType: row.file.type || 'application/octet-stream',
               onProgress: ({ transferredBytes, totalBytes }) => {
-                if (totalBytes) {
-                  updateRow(idx, 'progress', Math.round((transferredBytes / totalBytes) * 100));
-                }
+                if (totalBytes) updateRow(idx, 'progress', Math.round((transferredBytes / totalBytes) * 100));
               },
             },
           }).result;
 
-          // 3. Create Version
-          const versionResult = await client.models.Version.create({
-            trackId,
+          // 3. Create StemVersion record
+          const versionResult = await client.models.StemVersion.create({
+            stemId,
             s3Key,
             versionLabel: 'v1',
             fileSizeBytes: row.file.size,
@@ -210,11 +200,8 @@ export function BulkUploadModal({ projectId, existingTrackCount, onClose }: Bulk
             throw new Error(versionResult.errors?.[0]?.message ?? 'Failed to create version');
           }
 
-          // 4. Set active version
-          await client.models.Track.update({
-            id: trackId,
-            activeVersionId: versionResult.data.id,
-          });
+          // 4. Set as active version
+          await client.models.Stem.update({ id: stemId, activeVersionId: versionResult.data.id });
 
           updateRow(idx, 'status', 'done');
         } catch (e) {
@@ -241,36 +228,22 @@ export function BulkUploadModal({ projectId, existingTrackCount, onClose }: Bulk
       >
         <h2 className="modal-title" style={{ margin: '0 0 16px' }}>Upload stems</h2>
 
-        {/* Drop zone */}
         <div
           ref={dropRef}
           onDrop={handleDrop}
           onDragOver={(e) => e.preventDefault()}
           onClick={() => fileInputRef.current?.click()}
           style={{
-            border: '2px dashed var(--border)',
-            borderRadius: '10px',
-            padding: '28px',
-            textAlign: 'center',
-            cursor: 'pointer',
-            color: 'var(--text-muted)',
-            fontSize: '13px',
-            flexShrink: 0,
-            transition: 'border-color 0.15s, background 0.15s',
+            border: '2px dashed var(--border)', borderRadius: '10px', padding: '28px',
+            textAlign: 'center', cursor: 'pointer', color: 'var(--text-muted)', fontSize: '13px',
+            flexShrink: 0, transition: 'border-color 0.15s, background 0.15s',
           }}
-          onDragEnter={(e) => {
-            e.preventDefault();
-            if (dropRef.current) dropRef.current.style.borderColor = 'var(--accent)';
-          }}
-          onDragLeave={() => {
-            if (dropRef.current) dropRef.current.style.borderColor = 'var(--border)';
-          }}
+          onDragEnter={(e) => { e.preventDefault(); if (dropRef.current) dropRef.current.style.borderColor = 'var(--accent)'; }}
+          onDragLeave={() => { if (dropRef.current) dropRef.current.style.borderColor = 'var(--border)'; }}
         >
           <div style={{ fontSize: '24px', marginBottom: '8px' }}>🎛</div>
           Drop audio files here or <span style={{ color: 'var(--accent)' }}>browse</span>
-          <div style={{ marginTop: '4px', fontSize: '11px' }}>
-            WAV · AIFF · FLAC · MP3 · MIDI — multiple files OK
-          </div>
+          <div style={{ marginTop: '4px', fontSize: '11px' }}>WAV · AIFF · FLAC · MP3 · MIDI — multiple files OK</div>
           <input
             ref={fileInputRef}
             type="file"
@@ -281,13 +254,12 @@ export function BulkUploadModal({ projectId, existingTrackCount, onClose }: Bulk
           />
         </div>
 
-        {/* Table */}
         {rows.length > 0 && (
           <div style={{ flex: 1, overflowY: 'auto', marginTop: '16px' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
               <thead>
                 <tr style={{ color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                  <th style={{ textAlign: 'left', padding: '4px 6px', width: '28%' }}>Track name</th>
+                  <th style={{ textAlign: 'left', padding: '4px 6px', width: '28%' }}>Stem name</th>
                   <th style={{ textAlign: 'left', padding: '4px 6px', width: '22%' }}>Category</th>
                   <th style={{ textAlign: 'left', padding: '4px 6px', width: '10%' }}>Type</th>
                   <th style={{ textAlign: 'left', padding: '4px 6px', width: '22%' }}>File</th>
@@ -302,20 +274,17 @@ export function BulkUploadModal({ projectId, existingTrackCount, onClose }: Bulk
                     style={{
                       borderTop: '1px solid var(--border-subtle)',
                       background: row.status === 'error' ? 'rgba(239,68,68,0.05)' :
-                                  row.status === 'done'  ? 'rgba(16,185,129,0.05)' : undefined,
+                                  row.status === 'done' ? 'rgba(16,185,129,0.05)' : undefined,
                     }}
                   >
-                    {/* Track name */}
                     <td style={{ padding: '6px 6px' }}>
                       <input
-                        value={row.trackName}
-                        onChange={(e) => updateRow(idx, 'trackName', e.target.value)}
+                        value={row.stemName}
+                        onChange={(e) => updateRow(idx, 'stemName', e.target.value)}
                         disabled={row.status !== 'idle'}
                         style={{ fontSize: '12px', padding: '3px 6px' }}
                       />
                     </td>
-
-                    {/* Category */}
                     <td style={{ padding: '6px 6px' }}>
                       <select
                         value={row.category}
@@ -323,30 +292,18 @@ export function BulkUploadModal({ projectId, existingTrackCount, onClose }: Bulk
                         disabled={row.status !== 'idle'}
                         style={{ fontSize: '12px', padding: '3px 6px' }}
                       >
-                        {STEM_CATEGORIES.map((c) => (
-                          <option key={c} value={c}>{c}</option>
-                        ))}
+                        {STEM_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
                       </select>
                     </td>
-
-                    {/* Type */}
                     <td style={{ padding: '6px 6px' }}>
                       <span className={`badge ${row.fileType === 'MIDI' ? 'badge-midi' : 'badge-audio'}`} style={{ fontSize: '10px' }}>
                         {row.fileType}
                       </span>
                     </td>
-
-                    {/* Filename + size */}
                     <td style={{ padding: '6px 6px', color: 'var(--text-muted)', maxWidth: 0 }}>
-                      <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                        {row.file.name}
-                      </div>
-                      <div style={{ fontSize: '10px', marginTop: '1px' }}>
-                        {(row.file.size / 1024 / 1024).toFixed(1)} MB
-                      </div>
+                      <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{row.file.name}</div>
+                      <div style={{ fontSize: '10px', marginTop: '1px' }}>{(row.file.size / 1024 / 1024).toFixed(1)} MB</div>
                     </td>
-
-                    {/* Status / progress */}
                     <td style={{ padding: '6px 6px' }}>
                       {row.status === 'idle' && <span style={{ color: 'var(--text-muted)' }}>—</span>}
                       {row.status === 'uploading' && (
@@ -358,21 +315,11 @@ export function BulkUploadModal({ projectId, existingTrackCount, onClose }: Bulk
                         </div>
                       )}
                       {row.status === 'done' && <span style={{ color: 'var(--accent-green)' }}>✓ Done</span>}
-                      {row.status === 'error' && (
-                        <span style={{ color: 'var(--accent-red)', fontSize: '11px' }} title={row.error}>✗ Error</span>
-                      )}
+                      {row.status === 'error' && <span style={{ color: 'var(--accent-red)', fontSize: '11px' }} title={row.error}>✗ Error</span>}
                     </td>
-
-                    {/* Remove */}
                     <td style={{ padding: '6px 4px', textAlign: 'center' }}>
                       {row.status === 'idle' && (
-                        <button
-                          className="btn-ghost btn-sm"
-                          onClick={() => removeRow(idx)}
-                          style={{ padding: '1px 5px', color: 'var(--text-muted)' }}
-                        >
-                          ✕
-                        </button>
+                        <button className="btn-ghost btn-sm" onClick={() => removeRow(idx)} style={{ padding: '1px 5px', color: 'var(--text-muted)' }}>✕</button>
                       )}
                     </td>
                   </tr>
@@ -382,15 +329,12 @@ export function BulkUploadModal({ projectId, existingTrackCount, onClose }: Bulk
           </div>
         )}
 
-        {/* Footer */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '16px', flexShrink: 0 }}>
           <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
             {rows.length > 0 && !uploading && !allDone && (
               <>{rows.length} file{rows.length !== 1 ? 's' : ''} ready — edit names and categories before uploading</>
             )}
-            {uploading && (
-              <>{doneCount} / {rows.length} uploaded…</>
-            )}
+            {uploading && <>{doneCount} / {rows.length} uploaded…</>}
             {allDone && (
               <span style={{ color: errorCount ? 'var(--accent-orange)' : 'var(--accent-green)' }}>
                 {doneCount} uploaded{errorCount ? `, ${errorCount} failed` : ''}
@@ -398,22 +342,12 @@ export function BulkUploadModal({ projectId, existingTrackCount, onClose }: Bulk
             )}
           </div>
           <div style={{ display: 'flex', gap: '8px' }}>
-            <button
-              className="btn-secondary"
-              onClick={onClose}
-              disabled={uploading}
-            >
+            <button className="btn-secondary" onClick={onClose} disabled={uploading}>
               {allDone ? 'Close' : 'Cancel'}
             </button>
             {!allDone && (
-              <button
-                className="btn-primary"
-                onClick={handleUploadAll}
-                disabled={uploading || idleCount === 0}
-              >
-                {uploading
-                  ? `Uploading… ${doneCount}/${rows.length}`
-                  : `Upload ${idleCount} stem${idleCount !== 1 ? 's' : ''}`}
+              <button className="btn-primary" onClick={handleUploadAll} disabled={uploading || idleCount === 0}>
+                {uploading ? `Uploading… ${doneCount}/${rows.length}` : `Upload ${idleCount} stem${idleCount !== 1 ? 's' : ''}`}
               </button>
             )}
           </div>

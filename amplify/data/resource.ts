@@ -5,38 +5,67 @@ const schema = a.schema({
     .model({
       title: a.string().required(),
       description: a.string(),
+      type: a.enum(['SINGLE', 'EP', 'LP']),
       bpm: a.integer(),
       keySignature: a.string(),
       genre: a.string(),
-      mainBranchId: a.id(),
+      ownerId: a.string().required(),
       tracks: a.hasMany('Track', 'projectId'),
-      branches: a.hasMany('Branch', 'projectId'),
-      pullRequests: a.hasMany('PullRequest', 'projectId'),
       collaborators: a.hasMany('Collaborator', 'projectId'),
     })
-    .authorization((allow) => [allow.owner()]),
+    .authorization((allow) => [
+      allow.owner(),
+      allow.authenticated().to(['read']),
+    ]),
 
+  // A song within a project
   Track: a
     .model({
+      projectId: a.id().required(),
+      project: a.belongsTo('Project', 'projectId'),
+      title: a.string().required(),
+      sortOrder: a.integer(),
+      // Canonical snapshot: { stemId → stemVersionId }
+      mainSnapshot: a.json(),
+      isRemix: a.boolean(),
+      originalTrackId: a.id(),
+      originalProjectId: a.id(),
+      stems: a.hasMany('Stem', 'trackId'),
+      editRequests: a.hasMany('EditRequest', 'trackId'),
+    })
+    .authorization((allow) => [
+      allow.owner(),
+      allow.authenticated().to(['read']),
+    ]),
+
+  // A single audio/MIDI stem within a Track (was Track)
+  Stem: a
+    .model({
+      trackId: a.id().required(),
+      track: a.belongsTo('Track', 'trackId'),
       name: a.string().required(),
       type: a.enum(['AUDIO', 'MIDI', 'INSTRUMENT', 'MIX']),
       stemCategory: a.string(),
-      projectId: a.id().required(),
-      project: a.belongsTo('Project', 'projectId'),
-      activeVersionId: a.id(),
-      versions: a.hasMany('Version', 'trackId'),
       sortOrder: a.integer(),
+      activeVersionId: a.id(),
+      versions: a.hasMany('StemVersion', 'stemId'),
     })
-    .authorization((allow) => [allow.owner()]),
+    .authorization((allow) => [
+      allow.owner(),
+      allow.authenticated().to(['read']),
+    ]),
 
-  Version: a
+  // A specific uploaded file for a Stem (was Version)
+  StemVersion: a
     .model({
+      stemId: a.id().required(),
+      stem: a.belongsTo('Stem', 'stemId'),
       versionLabel: a.string(),
       notes: a.string(),
       s3Key: a.string().required(),
       proxyS3Key: a.string(),
-      trackId: a.id().required(),
-      track: a.belongsTo('Track', 'trackId'),
+      // Set on remix — references original StemVersion, no S3 copy
+      originalVersionId: a.id(),
       durationSeconds: a.float(),
       sampleRate: a.integer(),
       bitDepth: a.integer(),
@@ -46,36 +75,34 @@ const schema = a.schema({
       waveformData: a.json(),
       midiMetadata: a.json(),
     })
-    .authorization((allow) => [allow.owner()]),
+    .authorization((allow) => [allow.authenticated()]),
 
-  // A named snapshot: maps each trackId → versionId
-  Branch: a
+  // A proposed set of changes to a Track's stems (was Branch)
+  Edit: a
     .model({
-      projectId: a.id().required(),
-      project: a.belongsTo('Project', 'projectId'),
+      trackId: a.id().required(),
+      track: a.belongsTo('Track', 'trackId'),
       name: a.string().required(),
       description: a.string(),
-      isMain: a.boolean(),
-      // JSON: { [trackId]: versionId }
+      createdBy: a.string().required(),
       snapshot: a.json(),
-      pullRequests: a.hasMany('PullRequest', 'fromBranchId'),
+      editRequests: a.hasMany('EditRequest', 'fromEditId'),
     })
-    .authorization((allow) => [allow.owner()]),
+    .authorization((allow) => [allow.authenticated()]),
 
-  // A proposed change to main — snapshot diff from a branch
-  PullRequest: a
+  // A request to merge an Edit into the Track's main (was PullRequest)
+  EditRequest: a
     .model({
-      projectId: a.id().required(),
-      project: a.belongsTo('Project', 'projectId'),
-      fromBranchId: a.id().required(),
-      fromBranch: a.belongsTo('Branch', 'fromBranchId'),
+      trackId: a.id().required(),
+      track: a.belongsTo('Track', 'trackId'),
+      fromEditId: a.id().required(),
+      fromEdit: a.belongsTo('Edit', 'fromEditId'),
       title: a.string().required(),
       description: a.string(),
-      // JSON: { [trackId]: versionId } — proposed stem versions
       proposedSnapshot: a.json(),
       status: a.enum(['OPEN', 'MERGED', 'CLOSED']),
     })
-    .authorization((allow) => [allow.owner()]),
+    .authorization((allow) => [allow.authenticated()]),
 
   Collaborator: a
     .model({
@@ -83,9 +110,13 @@ const schema = a.schema({
       project: a.belongsTo('Project', 'projectId'),
       userId: a.string().required(),
       email: a.string().required(),
+      displayName: a.string(),
       role: a.enum(['EDITOR', 'VIEWER']),
     })
-    .authorization((allow) => [allow.owner()]),
+    .authorization((allow) => [
+      allow.owner(),
+      allow.authenticated().to(['read']),
+    ]),
 });
 
 export type Schema = ClientSchema<typeof schema>;

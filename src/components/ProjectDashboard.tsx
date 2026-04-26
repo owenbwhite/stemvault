@@ -1,17 +1,13 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { generateClient } from 'aws-amplify/data';
-import { getUrl } from 'aws-amplify/storage';
+import { useAuthenticator } from '@aws-amplify/ui-react';
 import type { Schema } from '../../amplify/data/resource';
-import { MixPlayer, type StemTrack } from './MixPlayer';
 import { PROJECT_TEMPLATES, type ProjectTemplate } from './templates';
-import { decodeSnapshot } from './snapshotUtils';
 
 const client = generateClient<Schema>();
 
 type Project = Schema['Project']['type'];
-type Track = Schema['Track']['type'];
-
 
 interface NewProjectForm {
   title: string;
@@ -19,9 +15,12 @@ interface NewProjectForm {
   bpm: string;
   keySignature: string;
   genre: string;
+  type: 'SINGLE' | 'EP' | 'LP';
 }
 
-const EMPTY_FORM: NewProjectForm = { title: '', description: '', bpm: '', keySignature: '', genre: '' };
+const EMPTY_FORM: NewProjectForm = {
+  title: '', description: '', bpm: '', keySignature: '', genre: '', type: 'SINGLE',
+};
 
 const KEY_OPTIONS = [
   'C major', 'C# major', 'D major', 'D# major', 'E major', 'F major',
@@ -30,8 +29,17 @@ const KEY_OPTIONS = [
   'F# minor', 'G minor', 'G# minor', 'A minor', 'A# minor', 'B minor',
 ];
 
+const TYPE_COLORS: Record<string, string> = {
+  SINGLE: 'var(--accent)',
+  EP: 'var(--accent-green)',
+  LP: '#a78bfa',
+};
+
 export function ProjectDashboard() {
-  const [projects, setProjects] = useState<Project[]>([]);
+  const { user } = useAuthenticator((ctx) => [ctx.user]);
+  const [myProjects, setMyProjects] = useState<Project[]>([]);
+  const [collabProjects, setCollabProjects] = useState<Project[]>([]);
+  const [tab, setTab] = useState<'library' | 'collabs'>('library');
   const [showModal, setShowModal] = useState(false);
   const [form, setForm] = useState<NewProjectForm>(EMPTY_FORM);
   const [selectedTemplate, setSelectedTemplate] = useState<ProjectTemplate | null>(null);
@@ -40,16 +48,37 @@ export function ProjectDashboard() {
   const navigate = useNavigate();
 
   useEffect(() => {
-    const sub = client.models.Project.observeQuery().subscribe({
-      next: ({ items }) => setProjects([...items].sort(
-        (a, b) => new Date(b.createdAt!).getTime() - new Date(a.createdAt!).getTime()
-      )),
+    if (!user?.userId) return;
+    const sub = client.models.Project.observeQuery({
+      filter: { ownerId: { eq: user.userId } },
+    }).subscribe({
+      next: ({ items }) => setMyProjects(
+        [...items].sort((a, b) => new Date(b.createdAt!).getTime() - new Date(a.createdAt!).getTime())
+      ),
     });
     return () => sub.unsubscribe();
-  }, []);
+  }, [user?.userId]);
+
+  useEffect(() => {
+    if (!user?.userId) return;
+    const sub = client.models.Collaborator.observeQuery({
+      filter: { userId: { eq: user.userId } },
+    }).subscribe({
+      next: async ({ items }: { items: Schema['Collaborator']['type'][] }) => {
+        if (items.length === 0) { setCollabProjects([]); return; }
+        const results = await Promise.all(items.map((c) => client.models.Project.get({ id: c.projectId })));
+        const loaded: Project[] = [];
+        for (const r of results) {
+          if (r.data) loaded.push(r.data as unknown as Project);
+        }
+        setCollabProjects(loaded.sort((a, b) => new Date(b.createdAt!).getTime() - new Date(a.createdAt!).getTime()));
+      },
+    });
+    return () => sub.unsubscribe();
+  }, [user?.userId]);
 
   const handleCreate = async () => {
-    if (!form.title.trim()) return;
+    if (!form.title.trim() || !user?.userId) return;
     setSaving(true);
     setError(null);
     try {
@@ -59,22 +88,33 @@ export function ProjectDashboard() {
         bpm: form.bpm ? parseInt(form.bpm, 10) : undefined,
         keySignature: form.keySignature || undefined,
         genre: (form.genre.trim() || selectedTemplate?.genre) || undefined,
+        type: form.type,
+        ownerId: user.userId,
       });
       if (result.errors) throw new Error(result.errors[0].message);
       const projectId = result.data?.id;
+
       if (projectId && selectedTemplate) {
-        await Promise.all(
-          selectedTemplate.tracks.map((t, i) =>
-            client.models.Track.create({
-              name: t.name,
-              type: t.type,
-              stemCategory: t.stemCategory,
-              projectId,
-              sortOrder: i,
-            })
-          )
-        );
+        const trackRes = await client.models.Track.create({
+          title: form.title.trim(),
+          projectId,
+          sortOrder: 0,
+        });
+        if (trackRes.data) {
+          await Promise.all(
+            selectedTemplate.tracks.map((t, i) =>
+              client.models.Stem.create({
+                trackId: trackRes.data!.id,
+                name: t.name,
+                type: t.type,
+                stemCategory: t.stemCategory,
+                sortOrder: i,
+              })
+            )
+          );
+        }
       }
+
       setShowModal(false);
       setForm(EMPTY_FORM);
       setSelectedTemplate(null);
@@ -92,17 +132,35 @@ export function ProjectDashboard() {
     await client.models.Project.delete({ id });
   };
 
+  const projects = tab === 'library' ? myProjects : collabProjects;
+
   return (
     <>
       <div className="page-header">
-        <h1 className="page-title">Projects</h1>
+        <div>
+          <h1 className="page-title">Projects</h1>
+          <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+            <button
+              className={tab === 'library' ? 'btn-primary btn-sm' : 'btn-ghost btn-sm'}
+              onClick={() => setTab('library')}
+            >
+              Library{myProjects.length > 0 ? ` (${myProjects.length})` : ''}
+            </button>
+            <button
+              className={tab === 'collabs' ? 'btn-primary btn-sm' : 'btn-ghost btn-sm'}
+              onClick={() => setTab('collabs')}
+            >
+              Collabs{collabProjects.length > 0 ? ` (${collabProjects.length})` : ''}
+            </button>
+          </div>
+        </div>
         <button className="btn-primary" onClick={() => setShowModal(true)}>+ New project</button>
       </div>
 
       {projects.length === 0 ? (
         <div className="empty-state">
           <div className="empty-state-icon">🎛️</div>
-          <p>No projects yet. Create one to start versioning your stems.</p>
+          <p>{tab === 'library' ? 'No projects yet. Create one to start versioning your stems.' : 'No collaborations yet.'}</p>
         </div>
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: '16px' }}>
@@ -110,6 +168,7 @@ export function ProjectDashboard() {
             <ProjectCard
               key={p.id}
               project={p}
+              showDelete={tab === 'library'}
               onClick={() => navigate(`/project/${p.id}`)}
               onDelete={(e) => handleDelete(e, p.id)}
             />
@@ -122,7 +181,27 @@ export function ProjectDashboard() {
           <div className="modal" onClick={(e) => e.stopPropagation()} style={{ width: '560px' }}>
             <h2 className="modal-title">New project</h2>
 
-            {/* Template selector */}
+            <div className="form-group">
+              <label className="form-label">Type</label>
+              <div style={{ display: 'flex', gap: 8 }}>
+                {(['SINGLE', 'EP', 'LP'] as const).map((t) => (
+                  <button
+                    key={t}
+                    onClick={() => setForm((f) => ({ ...f, type: t }))}
+                    style={{
+                      padding: '6px 16px', borderRadius: 6, cursor: 'pointer',
+                      background: form.type === t ? 'var(--bg-hover)' : 'transparent',
+                      border: `1px solid ${form.type === t ? (TYPE_COLORS[t] ?? 'var(--accent)') : 'var(--border)'}`,
+                      color: form.type === t ? 'var(--text-primary)' : 'var(--text-muted)',
+                      fontSize: '12px', fontWeight: 600,
+                    }}
+                  >
+                    {t}
+                  </button>
+                ))}
+              </div>
+            </div>
+
             <div className="form-group">
               <label className="form-label">Template</label>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8, marginBottom: 4 }}>
@@ -225,55 +304,13 @@ export function ProjectDashboard() {
   );
 }
 
-function ProjectCard({ project, onClick, onDelete }: {
+function ProjectCard({ project, showDelete, onClick, onDelete }: {
   project: Project;
+  showDelete: boolean;
   onClick: () => void;
   onDelete: (e: React.MouseEvent) => void;
 }) {
   const created = project.createdAt ? new Date(project.createdAt).toLocaleDateString() : '';
-  const [mixStems, setMixStems] = useState<StemTrack[] | null>(null);
-  const [loadingMix, setLoadingMix] = useState(false);
-  const [showMix, setShowMix] = useState(false);
-
-  const handlePlayMain = async (e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (showMix) { setShowMix(false); return; }
-    if (!project.mainBranchId) return;
-
-    if (!mixStems) {
-      setLoadingMix(true);
-      try {
-        const branchRes = await client.models.Branch.get({ id: project.mainBranchId });
-        const snapshot = decodeSnapshot(branchRes.data?.snapshot);
-
-        // Load tracks to get names/categories
-        const trackRes = await client.models.Track.list({
-          filter: { projectId: { eq: project.id } },
-        });
-        const trackMap = Object.fromEntries((trackRes.data ?? []).map((t: Track) => [t.id, t]));
-
-        const stems = await Promise.all(
-          Object.entries(snapshot).map(async ([trackId, versionId]) => {
-            const track = trackMap[trackId];
-            if (!track || track.type === 'MIX') return null;
-            try {
-              const vRes = await client.models.Version.get({ id: versionId });
-              const key = vRes.data?.proxyS3Key ?? vRes.data?.s3Key;
-              if (!key) return null;
-              const { url } = await getUrl({ path: key, options: { expiresIn: 3600 } });
-              return { id: trackId, name: track.name, category: track.stemCategory, url: url.toString() } as StemTrack;
-            } catch {
-              return null;
-            }
-          })
-        );
-        setMixStems(stems.filter(Boolean) as StemTrack[]);
-      } finally {
-        setLoadingMix(false);
-      }
-    }
-    setShowMix(true);
-  };
 
   return (
     <div
@@ -284,13 +321,27 @@ function ProjectCard({ project, onClick, onDelete }: {
       onMouseLeave={(e) => (e.currentTarget.style.borderColor = 'var(--border)')}
     >
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 }}>
-        <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 600 }}>{project.title}</h3>
-        <button
-          className="btn-ghost btn-sm"
-          onClick={onDelete}
-          style={{ flexShrink: 0, padding: '2px 6px', color: 'var(--text-muted)' }}
-          title="Delete project"
-        >✕</button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          {project.type && (
+            <span style={{
+              fontSize: '9px', fontWeight: 700, letterSpacing: '1px', textTransform: 'uppercase',
+              color: TYPE_COLORS[project.type] ?? 'var(--text-muted)',
+              border: `1px solid ${TYPE_COLORS[project.type] ?? 'var(--border)'}`,
+              padding: '1px 6px', borderRadius: '4px',
+            }}>
+              {project.type}
+            </span>
+          )}
+          <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 600 }}>{project.title}</h3>
+        </div>
+        {showDelete && (
+          <button
+            className="btn-ghost btn-sm"
+            onClick={onDelete}
+            style={{ flexShrink: 0, padding: '2px 6px', color: 'var(--text-muted)' }}
+            title="Delete project"
+          >✕</button>
+        )}
       </div>
 
       {project.description && (
@@ -305,26 +356,6 @@ function ProjectCard({ project, onClick, onDelete }: {
         {project.genre && <span className="meta-item">{project.genre}</span>}
         <span className="meta-item" style={{ marginLeft: 'auto' }}>{created}</span>
       </div>
-
-      {project.mainBranchId && (
-        <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 8 }} onClick={(e) => e.stopPropagation()}>
-          <span style={{ fontSize: '11px', color: 'var(--accent-green)', fontFamily: 'var(--font-mono)' }}>⎇ main</span>
-          <button
-            className="btn-secondary btn-sm"
-            onClick={handlePlayMain}
-            disabled={loadingMix}
-            style={{ fontSize: '11px' }}
-          >
-            {loadingMix ? 'Loading…' : showMix ? '▪ Stop' : '▶ Play main'}
-          </button>
-        </div>
-      )}
-
-      {showMix && mixStems && mixStems.length > 0 && (
-        <div style={{ marginTop: 14, borderTop: '1px solid var(--border)', paddingTop: 14 }} onClick={(e) => e.stopPropagation()}>
-          <MixPlayer stems={mixStems} />
-        </div>
-      )}
     </div>
   );
 }
