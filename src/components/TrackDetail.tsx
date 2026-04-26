@@ -96,6 +96,7 @@ export function TrackDetail() {
     AUDIO: 'badge-audio',
     MIDI: 'badge-midi',
     INSTRUMENT: 'badge-instrument',
+    MIX: 'badge-mix',
   };
 
   return (

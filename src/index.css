@@ -251,6 +251,7 @@ input:focus, textarea:focus, select:focus {
 .badge-audio { background: rgba(37, 99, 235, 0.2); color: #60a5fa; }
 .badge-midi  { background: rgba(124, 58, 237, 0.2); color: #a78bfa; }
 .badge-instrument { background: rgba(16, 185, 129, 0.2); color: #34d399; }
+.badge-mix   { background: rgba(245, 158, 11, 0.2); color: #fbbf24; }
 
 /* ---- Misc ---- */
 .page-header {

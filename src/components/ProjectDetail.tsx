@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { generateClient } from 'aws-amplify/data';
+import { getUrl } from 'aws-amplify/storage';
 import type { Schema } from '../../amplify/data/resource';
 import { BulkUploadModal } from './BulkUploadModal';
+import { MixPlayer, type StemTrack } from './MixPlayer';
 
 const client = generateClient<Schema>();
 
@@ -17,8 +19,11 @@ export function ProjectDetail() {
   const [tracks, setTracks] = useState<Track[]>([]);
   const [showAddTrack, setShowAddTrack] = useState(false);
   const [showBulkUpload, setShowBulkUpload] = useState(false);
+  const [showMixer, setShowMixer] = useState(false);
+  const [mixStems, setMixStems] = useState<StemTrack[] | null>(null);
+  const [loadingMix, setLoadingMix] = useState(false);
   const [newTrackName, setNewTrackName] = useState('');
-  const [newTrackType, setNewTrackType] = useState<'AUDIO' | 'MIDI' | 'INSTRUMENT'>('AUDIO');
+  const [newTrackType, setNewTrackType] = useState<'AUDIO' | 'MIDI' | 'INSTRUMENT' | 'MIX'>('AUDIO');
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(true);
 
@@ -66,6 +71,29 @@ export function ProjectDetail() {
     await client.models.Track.delete({ id: trackId });
   };
 
+  const handleMixStems = async () => {
+    const stemTracks = tracks.filter((t) => t.activeVersionId && t.type !== 'MIX');
+    if (stemTracks.length === 0) return;
+    setLoadingMix(true);
+    setShowMixer(false);
+    const results = await Promise.all(
+      stemTracks.map(async (t) => {
+        try {
+          const res = await client.models.Version.get({ id: t.activeVersionId! });
+          const key = res.data?.proxyS3Key ?? res.data?.s3Key;
+          if (!key) return null;
+          const { url } = await getUrl({ path: key, options: { expiresIn: 3600 } });
+          return { id: t.id, name: t.name, category: t.stemCategory, url: url.toString() } as StemTrack;
+        } catch {
+          return null;
+        }
+      })
+    );
+    setMixStems(results.filter(Boolean) as StemTrack[]);
+    setLoadingMix(false);
+    setShowMixer(true);
+  };
+
   if (loading) {
     return <div style={{ color: 'var(--text-muted)', padding: '40px 0' }}>Loading…</div>;
   }
@@ -101,25 +129,60 @@ export function ProjectDetail() {
           <button className="btn-secondary" onClick={() => setShowAddTrack(true)}>
             + Add track
           </button>
-          <button className="btn-primary" onClick={() => setShowBulkUpload(true)}>
+          <button className="btn-secondary" onClick={() => setShowBulkUpload(true)}>
             ↑ Upload stems
+          </button>
+          <button
+            className="btn-primary"
+            onClick={handleMixStems}
+            disabled={loadingMix || tracks.filter((t) => t.activeVersionId && t.type !== 'MIX').length === 0}
+            title="Mix all active stems"
+          >
+            {loadingMix ? 'Loading…' : '⚡ Mix stems'}
           </button>
         </div>
       </div>
 
-      <p className="section-title">Tracks ({tracks.length})</p>
+      {/* Live mixer */}
+      {showMixer && mixStems && (
+        <div className="card" style={{ marginBottom: '24px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
+            <span style={{ fontSize: '11px', fontWeight: 600, color: 'var(--accent)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+              ⚡ Live mix — {mixStems.length} stems
+            </span>
+            <button className="btn-ghost btn-sm" onClick={() => setShowMixer(false)} style={{ color: 'var(--text-muted)' }}>
+              ✕
+            </button>
+          </div>
+          <MixPlayer stems={mixStems} />
+        </div>
+      )}
 
-      {tracks.length === 0 ? (
+      {/* MIX tracks */}
+      {tracks.filter((t) => t.type === 'MIX').map((track) => (
+        <TrackRow
+          key={track.id}
+          track={track}
+          onClick={() => navigate(`/project/${projectId}/track/${track.id}`)}
+          onDelete={(e) => handleDeleteTrack(e, track.id)}
+        />
+      ))}
+
+      <p className="section-title">
+        Stems ({tracks.filter((t) => t.type !== 'MIX').length})
+      </p>
+
+      {tracks.filter((t) => t.type !== 'MIX').length === 0 ? (
         <div className="empty-state">
           <div className="empty-state-icon">🎚️</div>
-          <p>No tracks yet. Drop your stems to get started.</p>
+          <p>No stems yet. Drop your stems to get started.</p>
           <div style={{ display: 'flex', gap: '8px' }}>
             <button className="btn-secondary" onClick={() => setShowAddTrack(true)}>Add track</button>
-            <button className="btn-primary" onClick={() => setShowBulkUpload(true)}>Upload stems</button>
+            <button className="btn-secondary" onClick={() => setShowBulkUpload(true)}>Upload stems</button>
           </div>
         </div>
       ) : (
-        tracks.map((track) => (
+        tracks.filter((t) => t.type !== 'MIX').map((track) => (
           <TrackRow
             key={track.id}
             track={track}
@@ -163,6 +226,7 @@ export function ProjectDetail() {
                 <option value="AUDIO">Audio (WAV, AIFF, FLAC)</option>
                 <option value="MIDI">MIDI</option>
                 <option value="INSTRUMENT">Instrument / Synth Patch</option>
+                <option value="MIX">Mix / Master</option>
               </select>
             </div>
 
@@ -194,6 +258,7 @@ function TrackRow({ track, onClick, onDelete }: {
     AUDIO: 'badge-audio',
     MIDI: 'badge-midi',
     INSTRUMENT: 'badge-instrument',
+    MIX: 'badge-mix',
   };
 
   return (
