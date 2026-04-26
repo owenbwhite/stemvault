@@ -3,12 +3,13 @@ import { useNavigate } from 'react-router-dom';
 import { generateClient } from 'aws-amplify/data';
 import { getUrl } from 'aws-amplify/storage';
 import type { Schema } from '../../amplify/data/resource';
-import { AudioPlayer } from './AudioPlayer';
+import { MixPlayer, type StemTrack } from './MixPlayer';
 
 const client = generateClient<Schema>();
 
 type Project = Schema['Project']['type'];
 type Track = Schema['Track']['type'];
+type Snapshot = Record<string, string>;
 
 interface NewProjectForm {
   title: string;
@@ -18,13 +19,7 @@ interface NewProjectForm {
   genre: string;
 }
 
-const EMPTY_FORM: NewProjectForm = {
-  title: '',
-  description: '',
-  bpm: '',
-  keySignature: '',
-  genre: '',
-};
+const EMPTY_FORM: NewProjectForm = { title: '', description: '', bpm: '', keySignature: '', genre: '' };
 
 const KEY_OPTIONS = [
   'C major', 'C# major', 'D major', 'D# major', 'E major', 'F major',
@@ -35,7 +30,6 @@ const KEY_OPTIONS = [
 
 export function ProjectDashboard() {
   const [projects, setProjects] = useState<Project[]>([]);
-  const [activeTracksByProject, setActiveTracksByProject] = useState<Record<string, Track[]>>({});
   const [showModal, setShowModal] = useState(false);
   const [form, setForm] = useState<NewProjectForm>(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
@@ -43,25 +37,12 @@ export function ProjectDashboard() {
   const navigate = useNavigate();
 
   useEffect(() => {
-    const projectSub = client.models.Project.observeQuery().subscribe({
+    const sub = client.models.Project.observeQuery().subscribe({
       next: ({ items }) => setProjects([...items].sort(
         (a, b) => new Date(b.createdAt!).getTime() - new Date(a.createdAt!).getTime()
       )),
     });
-
-    const trackSub = client.models.Track.observeQuery().subscribe({
-      next: ({ items }) => {
-        const byProject: Record<string, Track[]> = {};
-        for (const t of items) {
-          if (t.activeVersionId) {
-            (byProject[t.projectId] ??= []).push(t);
-          }
-        }
-        setActiveTracksByProject(byProject);
-      },
-    });
-
-    return () => { projectSub.unsubscribe(); trackSub.unsubscribe(); };
+    return () => sub.unsubscribe();
   }, []);
 
   const handleCreate = async () => {
@@ -97,9 +78,7 @@ export function ProjectDashboard() {
     <>
       <div className="page-header">
         <h1 className="page-title">Projects</h1>
-        <button className="btn-primary" onClick={() => setShowModal(true)}>
-          + New project
-        </button>
+        <button className="btn-primary" onClick={() => setShowModal(true)}>+ New project</button>
       </div>
 
       {projects.length === 0 ? (
@@ -108,12 +87,11 @@ export function ProjectDashboard() {
           <p>No projects yet. Create one to start versioning your stems.</p>
         </div>
       ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '16px' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: '16px' }}>
           {projects.map((p) => (
             <ProjectCard
               key={p.id}
               project={p}
-              activeTracks={activeTracksByProject[p.id] ?? []}
               onClick={() => navigate(`/project/${p.id}`)}
               onDelete={(e) => handleDelete(e, p.id)}
             />
@@ -136,7 +114,6 @@ export function ProjectDashboard() {
                 autoFocus
               />
             </div>
-
             <div className="form-group">
               <label className="form-label">Description</label>
               <textarea
@@ -147,55 +124,31 @@ export function ProjectDashboard() {
                 style={{ resize: 'vertical' }}
               />
             </div>
-
             <div className="form-row">
               <div className="form-group" style={{ margin: 0 }}>
                 <label className="form-label">BPM</label>
-                <input
-                  type="number"
-                  placeholder="128"
-                  min={20}
-                  max={300}
-                  value={form.bpm}
-                  onChange={(e) => setForm((f) => ({ ...f, bpm: e.target.value }))}
-                />
+                <input type="number" placeholder="128" min={20} max={300} value={form.bpm}
+                  onChange={(e) => setForm((f) => ({ ...f, bpm: e.target.value }))} />
               </div>
               <div className="form-group" style={{ margin: 0 }}>
                 <label className="form-label">Key</label>
-                <select
-                  value={form.keySignature}
-                  onChange={(e) => setForm((f) => ({ ...f, keySignature: e.target.value }))}
-                >
+                <select value={form.keySignature} onChange={(e) => setForm((f) => ({ ...f, keySignature: e.target.value }))}>
                   <option value="">—</option>
                   {KEY_OPTIONS.map((k) => <option key={k} value={k}>{k}</option>)}
                 </select>
               </div>
               <div className="form-group" style={{ margin: 0 }}>
                 <label className="form-label">Genre</label>
-                <input
-                  type="text"
-                  placeholder="Electronic"
-                  value={form.genre}
-                  onChange={(e) => setForm((f) => ({ ...f, genre: e.target.value }))}
-                />
+                <input type="text" placeholder="Electronic" value={form.genre}
+                  onChange={(e) => setForm((f) => ({ ...f, genre: e.target.value }))} />
               </div>
             </div>
 
-            {error && (
-              <p style={{ color: 'var(--accent-red)', fontSize: '13px', margin: '8px 0 0' }}>
-                {error}
-              </p>
-            )}
+            {error && <p style={{ color: 'var(--accent-red)', fontSize: '13px', margin: '8px 0 0' }}>{error}</p>}
 
             <div className="modal-actions">
-              <button className="btn-secondary" onClick={() => { setShowModal(false); setForm(EMPTY_FORM); }}>
-                Cancel
-              </button>
-              <button
-                className="btn-primary"
-                onClick={handleCreate}
-                disabled={saving || !form.title.trim()}
-              >
+              <button className="btn-secondary" onClick={() => { setShowModal(false); setForm(EMPTY_FORM); }}>Cancel</button>
+              <button className="btn-primary" onClick={handleCreate} disabled={saving || !form.title.trim()}>
                 {saving ? 'Creating…' : 'Create project'}
               </button>
             </div>
@@ -206,53 +159,61 @@ export function ProjectDashboard() {
   );
 }
 
-type StemEntry = { url: string; waveformData: number[] | null };
-
-function ProjectCard({ project, activeTracks, onClick, onDelete }: {
+function ProjectCard({ project, onClick, onDelete }: {
   project: Project;
-  activeTracks: Track[];
   onClick: () => void;
   onDelete: (e: React.MouseEvent) => void;
 }) {
   const created = project.createdAt ? new Date(project.createdAt).toLocaleDateString() : '';
-  const [expanded, setExpanded] = useState(false);
-  const [stemData, setStemData] = useState<Record<string, StemEntry>>({});
-  const [loadingStems, setLoadingStems] = useState(false);
-  const activeCount = activeTracks.length;
+  const [mixStems, setMixStems] = useState<StemTrack[] | null>(null);
+  const [loadingMix, setLoadingMix] = useState(false);
+  const [showMix, setShowMix] = useState(false);
 
-  const toggleExpand = async (e: React.MouseEvent) => {
+  const handlePlayMain = async (e: React.MouseEvent) => {
     e.stopPropagation();
-    if (!expanded && Object.keys(stemData).length === 0 && activeTracks.length > 0) {
-      setLoadingStems(true);
-      const results = await Promise.all(
-        activeTracks.map(async (t) => {
-          if (!t.activeVersionId) return null;
-          try {
-            const res = await client.models.Version.get({ id: t.activeVersionId });
-            const key = res.data?.proxyS3Key ?? res.data?.s3Key;
-            if (!key) return null;
-            const { url } = await getUrl({ path: key, options: { expiresIn: 3600 } });
-            return { trackId: t.id, url: url.toString(), waveformData: res.data?.waveformData as number[] | null };
-          } catch {
-            return null;
-          }
-        })
-      );
-      const map: Record<string, StemEntry> = {};
-      for (const r of results) {
-        if (r) map[r.trackId] = { url: r.url, waveformData: r.waveformData };
+    if (showMix) { setShowMix(false); return; }
+    if (!project.mainBranchId) return;
+
+    if (!mixStems) {
+      setLoadingMix(true);
+      try {
+        const branchRes = await client.models.Branch.get({ id: project.mainBranchId });
+        const snapshot = (branchRes.data?.snapshot as Snapshot) ?? {};
+
+        // Load tracks to get names/categories
+        const trackRes = await client.models.Track.list({
+          filter: { projectId: { eq: project.id } },
+        });
+        const trackMap = Object.fromEntries((trackRes.data ?? []).map((t: Track) => [t.id, t]));
+
+        const stems = await Promise.all(
+          Object.entries(snapshot).map(async ([trackId, versionId]) => {
+            const track = trackMap[trackId];
+            if (!track || track.type === 'MIX') return null;
+            try {
+              const vRes = await client.models.Version.get({ id: versionId });
+              const key = vRes.data?.proxyS3Key ?? vRes.data?.s3Key;
+              if (!key) return null;
+              const { url } = await getUrl({ path: key, options: { expiresIn: 3600 } });
+              return { id: trackId, name: track.name, category: track.stemCategory, url: url.toString() } as StemTrack;
+            } catch {
+              return null;
+            }
+          })
+        );
+        setMixStems(stems.filter(Boolean) as StemTrack[]);
+      } finally {
+        setLoadingMix(false);
       }
-      setStemData(map);
-      setLoadingStems(false);
     }
-    setExpanded((v) => !v);
+    setShowMix(true);
   };
 
   return (
     <div
       className="card"
       onClick={onClick}
-      style={{ cursor: 'pointer', transition: 'border-color 0.15s', position: 'relative' }}
+      style={{ cursor: 'pointer', transition: 'border-color 0.15s' }}
       onMouseEnter={(e) => (e.currentTarget.style.borderColor = 'var(--accent-dim)')}
       onMouseLeave={(e) => (e.currentTarget.style.borderColor = 'var(--border)')}
     >
@@ -263,56 +224,39 @@ function ProjectCard({ project, activeTracks, onClick, onDelete }: {
           onClick={onDelete}
           style={{ flexShrink: 0, padding: '2px 6px', color: 'var(--text-muted)' }}
           title="Delete project"
-        >
-          ✕
-        </button>
+        >✕</button>
       </div>
+
       {project.description && (
         <p style={{ margin: '6px 0 0', fontSize: '13px', color: 'var(--text-secondary)', lineHeight: 1.4 }}>
           {project.description}
         </p>
       )}
+
       <div className="meta-row" style={{ marginTop: 12 }}>
         {project.bpm && <span className="meta-item"><strong>{project.bpm}</strong> BPM</span>}
         {project.keySignature && <span className="meta-item"><strong>{project.keySignature}</strong></span>}
         {project.genre && <span className="meta-item">{project.genre}</span>}
-        {activeCount > 0 && (
-          <button
-            onClick={toggleExpand}
-            style={{ background: 'none', border: 'none', padding: '2px 6px', fontSize: '11px', color: 'var(--accent)', cursor: 'pointer', fontFamily: 'var(--font-mono)' }}
-          >
-            {activeCount} stem{activeCount !== 1 ? 's' : ''} {expanded ? '▴' : '▾'}
-          </button>
-        )}
         <span className="meta-item" style={{ marginLeft: 'auto' }}>{created}</span>
       </div>
 
-      {expanded && (
-        <div
-          style={{ marginTop: 12, borderTop: '1px solid var(--border)', paddingTop: 12 }}
-          onClick={(e) => e.stopPropagation()}
-        >
-          {loadingStems ? (
-            <div style={{ fontSize: '12px', color: 'var(--text-muted)', padding: '4px 0' }}>Loading…</div>
-          ) : (
-            activeTracks.map((t) => (
-              <div key={t.id} style={{ marginBottom: 14 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-                  <span style={{ fontSize: '12px', fontWeight: 600 }}>{t.name}</span>
-                  {t.stemCategory && (
-                    <span style={{ fontSize: '10px', color: 'var(--text-secondary)', background: 'var(--bg-hover)', padding: '1px 6px', borderRadius: '999px', border: '1px solid var(--border)' }}>
-                      {t.stemCategory}
-                    </span>
-                  )}
-                </div>
-                {stemData[t.id] ? (
-                  <AudioPlayer src={stemData[t.id].url} waveformData={stemData[t.id].waveformData} />
-                ) : (
-                  <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>No audio</span>
-                )}
-              </div>
-            ))
-          )}
+      {project.mainBranchId && (
+        <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 8 }} onClick={(e) => e.stopPropagation()}>
+          <span style={{ fontSize: '11px', color: 'var(--accent-green)', fontFamily: 'var(--font-mono)' }}>⎇ main</span>
+          <button
+            className="btn-secondary btn-sm"
+            onClick={handlePlayMain}
+            disabled={loadingMix}
+            style={{ fontSize: '11px' }}
+          >
+            {loadingMix ? 'Loading…' : showMix ? '▪ Stop' : '▶ Play main'}
+          </button>
+        </div>
+      )}
+
+      {showMix && mixStems && mixStems.length > 0 && (
+        <div style={{ marginTop: 14, borderTop: '1px solid var(--border)', paddingTop: 14 }} onClick={(e) => e.stopPropagation()}>
+          <MixPlayer stems={mixStems} />
         </div>
       )}
     </div>

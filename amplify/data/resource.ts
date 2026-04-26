@@ -8,7 +8,10 @@ const schema = a.schema({
       bpm: a.integer(),
       keySignature: a.string(),
       genre: a.string(),
+      mainBranchId: a.id(),
       tracks: a.hasMany('Track', 'projectId'),
+      branches: a.hasMany('Branch', 'projectId'),
+      pullRequests: a.hasMany('PullRequest', 'projectId'),
       collaborators: a.hasMany('Collaborator', 'projectId'),
     })
     .authorization((allow) => [allow.owner()]),
@@ -34,17 +37,43 @@ const schema = a.schema({
       proxyS3Key: a.string(),
       trackId: a.id().required(),
       track: a.belongsTo('Track', 'trackId'),
-      // Audio technical metadata
       durationSeconds: a.float(),
       sampleRate: a.integer(),
       bitDepth: a.integer(),
       channels: a.integer(),
       fileSizeBytes: a.integer(),
       normalizedLufs: a.float(),
-      // Waveform peaks for browser rendering (JSON array of floats -1..1)
       waveformData: a.json(),
-      // Human-readable MIDI JSON for diffing (null for audio-only versions)
       midiMetadata: a.json(),
+    })
+    .authorization((allow) => [allow.owner()]),
+
+  // A named snapshot: maps each trackId → versionId
+  Branch: a
+    .model({
+      projectId: a.id().required(),
+      project: a.belongsTo('Project', 'projectId'),
+      name: a.string().required(),
+      description: a.string(),
+      isMain: a.boolean(),
+      // JSON: { [trackId]: versionId }
+      snapshot: a.json(),
+      pullRequests: a.hasMany('PullRequest', 'fromBranchId'),
+    })
+    .authorization((allow) => [allow.owner()]),
+
+  // A proposed change to main — snapshot diff from a branch
+  PullRequest: a
+    .model({
+      projectId: a.id().required(),
+      project: a.belongsTo('Project', 'projectId'),
+      fromBranchId: a.id().required(),
+      fromBranch: a.belongsTo('Branch', 'fromBranchId'),
+      title: a.string().required(),
+      description: a.string(),
+      // JSON: { [trackId]: versionId } — proposed stem versions
+      proposedSnapshot: a.json(),
+      status: a.enum(['OPEN', 'MERGED', 'CLOSED']),
     })
     .authorization((allow) => [allow.owner()]),
 

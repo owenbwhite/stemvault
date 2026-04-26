@@ -4,6 +4,7 @@ import '@aws-amplify/ui-react/styles.css';
 import { ProjectDashboard } from './components/ProjectDashboard';
 import { ProjectDetail } from './components/ProjectDetail';
 import { TrackDetail } from './components/TrackDetail';
+import { PullRequestDetail } from './components/PullRequestDetail';
 
 function Shell() {
   const { user, signOut } = useAuthenticator((ctx) => [ctx.user]);
@@ -31,6 +32,7 @@ function Shell() {
           <Route path="/" element={<ProjectDashboard />} />
           <Route path="/project/:projectId" element={<ProjectDetail />} />
           <Route path="/project/:projectId/track/:trackId" element={<TrackDetail />} />
+          <Route path="/project/:projectId/pr/:prId" element={<PullRequestDetail />} />
         </Routes>
       </main>
     </div>
