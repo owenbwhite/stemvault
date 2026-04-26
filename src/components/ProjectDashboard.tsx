@@ -4,6 +4,7 @@ import { generateClient } from 'aws-amplify/data';
 import { getUrl } from 'aws-amplify/storage';
 import type { Schema } from '../../amplify/data/resource';
 import { MixPlayer, type StemTrack } from './MixPlayer';
+import { PROJECT_TEMPLATES, type ProjectTemplate } from './templates';
 
 const client = generateClient<Schema>();
 
@@ -32,6 +33,7 @@ export function ProjectDashboard() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [showModal, setShowModal] = useState(false);
   const [form, setForm] = useState<NewProjectForm>(EMPTY_FORM);
+  const [selectedTemplate, setSelectedTemplate] = useState<ProjectTemplate | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const navigate = useNavigate();
@@ -55,12 +57,27 @@ export function ProjectDashboard() {
         description: form.description.trim() || undefined,
         bpm: form.bpm ? parseInt(form.bpm, 10) : undefined,
         keySignature: form.keySignature || undefined,
-        genre: form.genre.trim() || undefined,
+        genre: (form.genre.trim() || selectedTemplate?.genre) || undefined,
       });
       if (result.errors) throw new Error(result.errors[0].message);
+      const projectId = result.data?.id;
+      if (projectId && selectedTemplate) {
+        await Promise.all(
+          selectedTemplate.tracks.map((t, i) =>
+            client.models.Track.create({
+              name: t.name,
+              type: t.type,
+              stemCategory: t.stemCategory,
+              projectId,
+              sortOrder: i,
+            })
+          )
+        );
+      }
       setShowModal(false);
       setForm(EMPTY_FORM);
-      if (result.data?.id) navigate(`/project/${result.data.id}`);
+      setSelectedTemplate(null);
+      if (projectId) navigate(`/project/${projectId}`);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to create project');
     } finally {
@@ -100,9 +117,53 @@ export function ProjectDashboard() {
       )}
 
       {showModal && (
-        <div className="modal-overlay" onClick={() => setShowModal(false)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-overlay" onClick={() => { setShowModal(false); setForm(EMPTY_FORM); setSelectedTemplate(null); }}>
+          <div className="modal" onClick={(e) => e.stopPropagation()} style={{ width: '560px' }}>
             <h2 className="modal-title">New project</h2>
+
+            {/* Template selector */}
+            <div className="form-group">
+              <label className="form-label">Template</label>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8, marginBottom: 4 }}>
+                <button
+                  onClick={() => setSelectedTemplate(null)}
+                  style={{
+                    padding: '8px 10px', borderRadius: 6, cursor: 'pointer', textAlign: 'left',
+                    background: !selectedTemplate ? 'var(--bg-hover)' : 'transparent',
+                    border: `1px solid ${!selectedTemplate ? 'var(--accent)' : 'var(--border)'}`,
+                    color: !selectedTemplate ? 'var(--text-primary)' : 'var(--text-muted)',
+                    fontSize: '12px',
+                  }}
+                >
+                  Blank project
+                </button>
+                {PROJECT_TEMPLATES.map((t) => (
+                  <button
+                    key={t.id}
+                    onClick={() => setSelectedTemplate(t)}
+                    style={{
+                      padding: '8px 10px', borderRadius: 6, cursor: 'pointer', textAlign: 'left',
+                      background: selectedTemplate?.id === t.id ? 'var(--bg-hover)' : 'transparent',
+                      border: `1px solid ${selectedTemplate?.id === t.id ? 'var(--accent)' : 'var(--border)'}`,
+                      color: selectedTemplate?.id === t.id ? 'var(--text-primary)' : 'var(--text-muted)',
+                      fontSize: '12px',
+                    }}
+                  >
+                    <div style={{ fontWeight: 600, marginBottom: 2 }}>{t.name}</div>
+                    <div style={{ fontSize: '10px', opacity: 0.7 }}>{t.tracks.length} stems</div>
+                  </button>
+                ))}
+              </div>
+              {selectedTemplate && (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 8 }}>
+                  {selectedTemplate.tracks.map((t) => (
+                    <span key={t.name} style={{ fontSize: '10px', color: 'var(--text-muted)', background: 'var(--bg-hover)', padding: '2px 8px', borderRadius: '999px', border: '1px solid var(--border)' }}>
+                      {t.stemCategory}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
 
             <div className="form-group">
               <label className="form-label">Title *</label>
@@ -139,17 +200,21 @@ export function ProjectDashboard() {
               </div>
               <div className="form-group" style={{ margin: 0 }}>
                 <label className="form-label">Genre</label>
-                <input type="text" placeholder="Electronic" value={form.genre}
-                  onChange={(e) => setForm((f) => ({ ...f, genre: e.target.value }))} />
+                <input
+                  type="text"
+                  placeholder={selectedTemplate?.genre ?? 'Electronic'}
+                  value={form.genre}
+                  onChange={(e) => setForm((f) => ({ ...f, genre: e.target.value }))}
+                />
               </div>
             </div>
 
             {error && <p style={{ color: 'var(--accent-red)', fontSize: '13px', margin: '8px 0 0' }}>{error}</p>}
 
             <div className="modal-actions">
-              <button className="btn-secondary" onClick={() => { setShowModal(false); setForm(EMPTY_FORM); }}>Cancel</button>
+              <button className="btn-secondary" onClick={() => { setShowModal(false); setForm(EMPTY_FORM); setSelectedTemplate(null); }}>Cancel</button>
               <button className="btn-primary" onClick={handleCreate} disabled={saving || !form.title.trim()}>
-                {saving ? 'Creating…' : 'Create project'}
+                {saving ? 'Creating…' : selectedTemplate ? `Create with ${selectedTemplate.name} template` : 'Create project'}
               </button>
             </div>
           </div>

@@ -25,9 +25,10 @@ export function ProjectDetail() {
   const [showAddTrack, setShowAddTrack] = useState(false);
   const [showBulkUpload, setShowBulkUpload] = useState(false);
   const [showCreatePR, setShowCreatePR] = useState(false);
-  const [showMixer, setShowMixer] = useState(false);
-  const [mixStems, setMixStems] = useState<StemTrack[] | null>(null);
-  const [loadingMix, setLoadingMix] = useState(false);
+  // Master mix — persists for the page session, keyed to snapshot
+  const [masterMixStems, setMasterMixStems] = useState<StemTrack[] | null>(null);
+  const [masterMixSnapshotKey, setMasterMixSnapshotKey] = useState<string | null>(null);
+  const [loadingMasterMix, setLoadingMasterMix] = useState(false);
   const [newTrackName, setNewTrackName] = useState('');
   const [newTrackType, setNewTrackType] = useState<'AUDIO' | 'MIDI' | 'INSTRUMENT' | 'MIX'>('AUDIO');
   const [saving, setSaving] = useState(false);
@@ -112,27 +113,28 @@ export function ProjectDetail() {
     await client.models.Track.delete({ id: trackId });
   };
 
-  const handleMixStems = async () => {
-    const stemTracks = tracks.filter((t) => t.activeVersionId && t.type !== 'MIX');
-    if (stemTracks.length === 0) return;
-    setLoadingMix(true);
-    setShowMixer(false);
+  const loadMasterMix = async (branch: Branch) => {
+    const snapshot = branch.snapshot as Snapshot;
+    if (!snapshot || Object.keys(snapshot).length === 0) return;
+    setLoadingMasterMix(true);
     const results = await Promise.all(
-      stemTracks.map(async (t) => {
+      Object.entries(snapshot).map(async ([trackId, versionId]) => {
+        const track = tracks.find((t) => t.id === trackId);
+        if (!track || track.type === 'MIX') return null;
         try {
-          const res = await client.models.Version.get({ id: t.activeVersionId! });
+          const res = await client.models.Version.get({ id: versionId });
           const key = res.data?.proxyS3Key ?? res.data?.s3Key;
           if (!key) return null;
           const { url } = await getUrl({ path: key, options: { expiresIn: 3600 } });
-          return { id: t.id, name: t.name, category: t.stemCategory, url: url.toString() } as StemTrack;
+          return { id: trackId, name: track.name, category: track.stemCategory, url: url.toString() } as StemTrack;
         } catch {
           return null;
         }
       })
     );
-    setMixStems(results.filter(Boolean) as StemTrack[]);
-    setLoadingMix(false);
-    setShowMixer(true);
+    setMasterMixStems(results.filter(Boolean) as StemTrack[]);
+    setMasterMixSnapshotKey(JSON.stringify(snapshot));
+    setLoadingMasterMix(false);
   };
 
   // Commit current active stem versions to the main branch snapshot
@@ -144,7 +146,11 @@ export function ProjectDetail() {
 
     if (mainBranch) {
       await client.models.Branch.update({ id: mainBranch.id, snapshot });
-      setMainBranch((b) => b ? { ...b, snapshot } : b);
+      const updated = { ...mainBranch, snapshot };
+      setMainBranch(updated);
+      // Reload master mix with updated snapshot
+      setMasterMixStems(null);
+      setMasterMixSnapshotKey(null);
     } else {
       const res = await client.models.Branch.create({ projectId, name: 'main', isMain: true, snapshot });
       if (res.data) {
@@ -196,13 +202,6 @@ export function ProjectDetail() {
           <button className="btn-secondary" onClick={() => setShowBulkUpload(true)}>↑ Upload stems</button>
           <button
             className="btn-secondary"
-            onClick={handleMixStems}
-            disabled={loadingMix || activeCount === 0}
-          >
-            {loadingMix ? 'Loading…' : '⚡ Mix stems'}
-          </button>
-          <button
-            className="btn-secondary"
             onClick={handleCommitToMain}
             disabled={activeCount === 0}
             title="Save current active stem versions to main"
@@ -219,18 +218,56 @@ export function ProjectDetail() {
         </div>
       </div>
 
-      {/* Live mixer */}
-      {showMixer && mixStems && (
-        <div className="card" style={{ marginBottom: '24px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
-            <span style={{ fontSize: '11px', fontWeight: 600, color: 'var(--accent)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-              ⚡ Live mix — {mixStems.length} stems
+      {/* Master mix — persistent player for the main branch */}
+      <div className="card" style={{ marginBottom: '24px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: masterMixStems ? '16px' : 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span style={{ fontSize: '11px', fontWeight: 600, color: 'var(--accent-green)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+              ⎇ Master Mix
             </span>
-            <button className="btn-ghost btn-sm" onClick={() => setShowMixer(false)} style={{ color: 'var(--text-muted)' }}>✕</button>
+            {mainBranch && (
+              <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+                main · {Object.keys((mainBranch.snapshot as Snapshot) ?? {}).length} stems
+              </span>
+            )}
           </div>
-          <MixPlayer stems={mixStems} />
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            {!mainBranch ? (
+              <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+                Commit stems to main to enable playback
+              </span>
+            ) : !masterMixStems ? (
+              <button
+                className="btn-secondary btn-sm"
+                onClick={() => loadMasterMix(mainBranch)}
+                disabled={loadingMasterMix}
+              >
+                {loadingMasterMix ? 'Loading…' : '▶ Load mix'}
+              </button>
+            ) : (
+              <>
+                {masterMixSnapshotKey !== JSON.stringify(mainBranch.snapshot) && (
+                  <button
+                    className="btn-secondary btn-sm"
+                    onClick={() => loadMasterMix(mainBranch)}
+                    style={{ fontSize: '11px', color: 'var(--accent)' }}
+                  >
+                    ⟳ Reload
+                  </button>
+                )}
+                <button
+                  className="btn-ghost btn-sm"
+                  onClick={() => { setMasterMixStems(null); setMasterMixSnapshotKey(null); }}
+                  style={{ color: 'var(--text-muted)', fontSize: '11px' }}
+                >
+                  Unload
+                </button>
+              </>
+            )}
+          </div>
         </div>
-      )}
+        {masterMixStems && <MixPlayer stems={masterMixStems} />}
+      </div>
 
       {/* MIX tracks */}
       {tracks.filter((t) => t.type === 'MIX').map((track) => (
