@@ -12,12 +12,8 @@ const client = generateClient<Schema>();
 
 type Edit = Schema['Edit']['type'];
 type Stem = Schema['Stem']['type'];
-type StemVersion = Schema['StemVersion']['type'];
 type EditRequest = Schema['EditRequest']['type'];
 
-interface VersionWithUrl extends StemVersion {
-  playbackUrl?: string;
-}
 
 export function EditDetail() {
   const { projectId, trackId, editId } = useParams<{ projectId: string; trackId: string; editId: string }>();
@@ -26,18 +22,13 @@ export function EditDetail() {
   const [edit, setEdit] = useState<Edit | null>(null);
   const [stems, setStems] = useState<Stem[]>([]);
   const [editSnapshot, setEditSnapshot] = useState<Snapshot>({});
-  const [versionsByStem, setVersionsByStem] = useState<Record<string, VersionWithUrl[]>>({});
   const [mixStems, setMixStems] = useState<StemTrack[] | null>(null);
   const [loadingMix, setLoadingMix] = useState(false);
   const [loading, setLoading] = useState(true);
+  const autoLoadRef = useRef(false);
 
   // Per-stem upload state
   const [uploadStemId, setUploadStemId] = useState<string | null>(null);
-
-  // Version picker state
-  const [pickerStemId, setPickerStemId] = useState<string | null>(null);
-  const [pickerVersions, setPickerVersions] = useState<VersionWithUrl[]>([]);
-  const [loadingPicker, setLoadingPicker] = useState(false);
 
   // Open ER state
   const [showOpenER, setShowOpenER] = useState(false);
@@ -68,7 +59,26 @@ export function EditDetail() {
     if (!editId) return;
     await client.models.Edit.update({ id: editId, snapshot: encodeSnapshot(newSnapshot) });
     setEditSnapshot(newSnapshot);
-    setMixStems(null); // invalidate mix
+    setMixStems(null);
+    // Reload mix with updated snapshot
+    if (Object.keys(newSnapshot).length > 0) {
+      setLoadingMix(true);
+      const results = await Promise.all(
+        Object.entries(newSnapshot).map(async ([stemId, versionId]) => {
+          const stem = stems.find((s) => s.id === stemId);
+          if (!stem) return null;
+          try {
+            const res = await client.models.StemVersion.get({ id: versionId });
+            const key = res.data?.proxyS3Key ?? res.data?.s3Key;
+            if (!key) return null;
+            const { url } = await getUrl({ path: key, options: { expiresIn: 3600 } });
+            return { id: stemId, name: stem.name, fileType: stem.type === 'MIDI' ? 'MIDI' : 'AUDIO', url: url.toString(), onNameClick: () => navigate(`/project/${projectId}/track/${trackId}/stem/${stemId}`) } as StemTrack;
+          } catch { return null; }
+        })
+      );
+      setMixStems(results.filter(Boolean) as StemTrack[]);
+      setLoadingMix(false);
+    }
   };
 
   const handleToggleStem = async (stemId: string, include: boolean) => {
@@ -89,32 +99,6 @@ export function EditDetail() {
   const handleHotswap = async (stemId: string, versionId: string) => {
     const next = { ...editSnapshot, [stemId]: versionId };
     await updateSnapshot(next);
-    setPickerStemId(null);
-  };
-
-  const openPicker = async (stemId: string) => {
-    setPickerStemId(stemId);
-    setLoadingPicker(true);
-    // Load all published versions + this edit's draft versions
-    const res = await client.models.StemVersion.list({
-      filter: { stemId: { eq: stemId } },
-    });
-    const all = (res.data ?? []).filter(
-      (v) => !v.pendingEditId || v.pendingEditId === editId
-    );
-    const sorted = [...all].sort((a, b) => new Date(b.createdAt!).getTime() - new Date(a.createdAt!).getTime());
-    const withUrls = await Promise.all(
-      sorted.map(async (v) => {
-        if (!v.proxyS3Key && !v.s3Key) return v as VersionWithUrl;
-        try {
-          const key = v.proxyS3Key ?? v.s3Key;
-          const { url } = await getUrl({ path: key!, options: { expiresIn: 3600 } });
-          return { ...v, playbackUrl: url.toString() } as VersionWithUrl;
-        } catch { return v as VersionWithUrl; }
-      })
-    );
-    setPickerVersions(withUrls);
-    setLoadingPicker(false);
   };
 
   const handleLoadMix = async () => {
@@ -129,7 +113,7 @@ export function EditDetail() {
           const key = res.data?.proxyS3Key ?? res.data?.s3Key;
           if (!key) return null;
           const { url } = await getUrl({ path: key, options: { expiresIn: 3600 } });
-          return { id: stemId, name: stem.name, category: stem.stemCategory, url: url.toString() } as StemTrack;
+          return { id: stemId, name: stem.name, category: stem.stemCategory, fileType: stem.type === 'MIDI' ? 'MIDI' : 'AUDIO', url: url.toString(), onNameClick: () => navigate(`/project/${projectId}/track/${trackId}/stem/${stemId}`) } as StemTrack;
         } catch { return null; }
       })
     );
@@ -137,21 +121,14 @@ export function EditDetail() {
     setLoadingMix(false);
   };
 
-  // Resolve version labels for the snapshot display
+  // Auto-load mix once edit + stems are ready
   useEffect(() => {
-    const versionIds = Object.values(editSnapshot);
-    if (versionIds.length === 0) return;
-    Promise.all(
-      versionIds.map(async (vId) => {
-        if (versionsByStem[vId]) return;
-        const res = await client.models.StemVersion.get({ id: vId });
-        if (res.data) {
-          setVersionsByStem((prev) => ({ ...prev, [vId]: [res.data as VersionWithUrl] }));
-        }
-      })
-    );
+    if (autoLoadRef.current || loading || stems.length === 0) return;
+    if (Object.keys(editSnapshot).length === 0) return;
+    autoLoadRef.current = true;
+    handleLoadMix();
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editSnapshot]);
+  }, [loading, editSnapshot, stems]);
 
   if (loading) return <div style={{ color: 'var(--text-muted)', padding: '40px 0' }}>Loading…</div>;
   if (!edit) return (
@@ -197,135 +174,59 @@ export function EditDetail() {
       </div>
 
       {/* Mix player */}
-      <div className="card" style={{ marginBottom: 24 }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: mixStems ? 16 : 0 }}>
-          <span style={{ fontSize: '11px', fontWeight: 600, color: 'var(--accent)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-            Edit mix · {includedCount} stem{includedCount !== 1 ? 's' : ''}
-          </span>
-          <div style={{ display: 'flex', gap: 8 }}>
-            {includedCount === 0 ? (
-              <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Add stems to the mix to enable playback</span>
-            ) : !mixStems ? (
-              <button className="btn-secondary btn-sm" onClick={handleLoadMix} disabled={loadingMix}>
-                {loadingMix ? 'Loading…' : '▶ Load mix'}
-              </button>
-            ) : (
-              <button className="btn-ghost btn-sm" onClick={() => setMixStems(null)} style={{ color: 'var(--text-muted)', fontSize: '11px' }}>
-                Unload
-              </button>
-            )}
-          </div>
-        </div>
-        {mixStems && <MixPlayer stems={mixStems} autoPlay />}
-      </div>
-
-      {/* Stem list */}
-      <p className="section-title">Stems</p>
-
-      {stems.length === 0 ? (
-        <div className="empty-state"><p>No stems on this track yet.</p></div>
-      ) : (
-        stems.map((stem) => {
-          const versionId = editSnapshot[stem.id];
-          const included = !!versionId;
-          const versionRecord = versionId ? (versionsByStem[versionId]?.[0] ?? null) : null;
-          const isDraft = !!versionRecord?.pendingEditId;
-          const versionLabel = versionRecord?.versionLabel ?? (versionId ? versionId.slice(0, 8) : null);
-
-          return (
-            <div key={stem.id} style={{
-              display: 'flex', alignItems: 'center', gap: 10,
-              padding: '12px 16px', background: 'var(--bg-card)',
-              border: '1px solid var(--border)', borderRadius: 10, marginBottom: 8,
-              opacity: included ? 1 : 0.45,
-            }}>
-              <button
-                onClick={() => handleToggleStem(stem.id, !included)}
-                title={included ? 'Remove from mix' : 'Include in mix'}
-                style={{
-                  width: 20, height: 20, borderRadius: 4, flexShrink: 0, padding: 0,
-                  background: included ? 'var(--accent)' : 'transparent',
-                  border: `1.5px solid ${included ? 'var(--accent)' : 'var(--border)'}`,
-                  cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  transition: 'background 0.15s, border-color 0.15s',
-                }}
-              >
-                {included && <span style={{ color: '#fff', fontSize: 11, lineHeight: 1, fontWeight: 700 }}>✓</span>}
-              </button>
-              <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: 500, fontSize: '14px' }}>
-                {stem.name}
-              </span>
-              {stem.stemCategory && (
-                <span style={{ fontSize: '10px', color: 'var(--text-muted)', background: 'var(--bg-hover)', padding: '1px 6px', borderRadius: '999px', border: '1px solid var(--border)', flexShrink: 0 }}>
-                  {stem.stemCategory}
-                </span>
-              )}
-              {included && versionLabel && (
-                <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', flexShrink: 0 }}>
-                  {versionLabel}
-                  {isDraft && <span style={{ color: 'var(--accent)', marginLeft: 4 }}>· draft</span>}
-                </span>
-              )}
-              <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
-                {included && (
-                  <button className="btn-ghost btn-sm" onClick={() => openPicker(stem.id)} style={{ fontSize: '11px' }}>
-                    Change version
+      {includedCount > 0 && (
+        <div className="card" style={{ marginBottom: 24 }}>
+          {loadingMix || !mixStems ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, color: 'var(--text-muted)', fontSize: '13px', padding: '4px 0' }}>
+              <span style={{ animation: 'spin 1s linear infinite', display: 'inline-block' }}>⟳</span>
+              Loading mix…
+            </div>
+          ) : (
+            <MixPlayer
+              stems={mixStems}
+              renderStemExtra={(s) => (
+                <>
+                  <EditVersionSelect
+                    stemId={s.id}
+                    editId={editId!}
+                    currentVersionId={editSnapshot[s.id]}
+                    onSwap={handleHotswap}
+                  />
+                  <button
+                    className="btn-ghost btn-sm"
+                    title="Upload new version"
+                    onClick={(e) => { e.stopPropagation(); setUploadStemId(s.id); }}
+                    style={{ fontSize: '11px', flexShrink: 0, padding: '1px 6px' }}
+                  >
+                    ↑
                   </button>
-                )}
-                <button className="btn-secondary btn-sm" onClick={() => setUploadStemId(stem.id)} style={{ fontSize: '11px' }}>
-                  ↑ Upload
+                </>
+              )}
+            />
+          )}
+        </div>
+      )}
+
+      {/* Not in mix — stems excluded from this edit */}
+      {stems.filter((s) => !editSnapshot[s.id]).length > 0 && (
+        <>
+          <p className="section-title" style={{ marginTop: 8, color: 'var(--text-muted)' }}>
+            Not in mix ({stems.filter((s) => !editSnapshot[s.id]).length})
+          </p>
+          {stems.filter((s) => !editSnapshot[s.id]).map((stem) => (
+            <div key={stem.id} className="version-row" style={{ cursor: 'default', opacity: 0.5 }}>
+              <span className="version-label">{stem.name}</span>
+              <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
+                <button className="btn-secondary btn-sm" onClick={() => handleToggleStem(stem.id, true)}>
+                  Add to mix
+                </button>
+                <button className="btn-ghost btn-sm" onClick={() => navigate(`/project/${projectId}/track/${trackId}/stem/${stem.id}`)}>
+                  History →
                 </button>
               </div>
             </div>
-          );
-        })
-      )}
-
-      {/* Version picker modal */}
-      {pickerStemId && (
-        <div className="modal-overlay" onClick={() => setPickerStemId(null)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()} style={{ width: '480px' }}>
-            <h2 className="modal-title">
-              Change version — {stems.find((s) => s.id === pickerStemId)?.name}
-            </h2>
-            {loadingPicker ? (
-              <div style={{ color: 'var(--text-muted)', padding: '20px 0' }}>Loading versions…</div>
-            ) : pickerVersions.length === 0 ? (
-              <div style={{ color: 'var(--text-muted)', padding: '20px 0' }}>No versions available.</div>
-            ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 16 }}>
-                {pickerVersions.map((v, idx) => {
-                  const label = v.versionLabel ?? `v${pickerVersions.length - idx}`;
-                  const isCurrent = editSnapshot[pickerStemId] === v.id;
-                  const isDraft = !!v.pendingEditId;
-                  return (
-                    <div
-                      key={v.id}
-                      onClick={() => !isCurrent && handleHotswap(pickerStemId, v.id)}
-                      style={{
-                        display: 'flex', alignItems: 'center', gap: 10,
-                        padding: '10px 12px', borderRadius: 8, cursor: isCurrent ? 'default' : 'pointer',
-                        background: isCurrent ? 'var(--bg-hover)' : 'transparent',
-                        border: `1px solid ${isCurrent ? 'var(--accent-dim)' : 'var(--border)'}`,
-                      }}
-                    >
-                      <span style={{ fontFamily: 'var(--font-mono)', fontSize: '13px', fontWeight: 600 }}>{label}</span>
-                      {isDraft && <span style={{ fontSize: '10px', color: 'var(--accent)', fontWeight: 600 }}>draft</span>}
-                      {v.notes && <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>{v.notes}</span>}
-                      <span style={{ marginLeft: 'auto', fontSize: '11px', color: 'var(--text-muted)' }}>
-                        {new Date(v.createdAt!).toLocaleDateString()}
-                      </span>
-                      {isCurrent && <span style={{ fontSize: '11px', color: 'var(--accent-green)', fontWeight: 600 }}>current</span>}
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-            <div className="modal-actions">
-              <button className="btn-secondary" onClick={() => setPickerStemId(null)}>Close</button>
-            </div>
-          </div>
-        </div>
+          ))}
+        </>
       )}
 
       {/* Upload modal */}
@@ -387,6 +288,47 @@ export function EditDetail() {
         />
       )}
     </>
+  );
+}
+
+// ── Edit Version Select ───────────────────────────────────────────────────────
+
+function EditVersionSelect({ stemId, editId, currentVersionId, onSwap }: {
+  stemId: string;
+  editId: string;
+  currentVersionId: string;
+  onSwap: (stemId: string, versionId: string) => void;
+}) {
+  const [versions, setVersions] = useState<Array<{ id: string; label: string; isDraft: boolean }> | null>(null);
+
+  const load = async () => {
+    if (versions) return;
+    const res = await client.models.StemVersion.list({ filter: { stemId: { eq: stemId } } });
+    const filtered = (res.data ?? []).filter((v) => !v.pendingEditId || v.pendingEditId === editId);
+    const sorted = [...filtered].sort((a, b) => new Date(b.createdAt!).getTime() - new Date(a.createdAt!).getTime());
+    setVersions(sorted.map((v, idx) => ({
+      id: v.id,
+      label: v.versionLabel ?? `v${sorted.length - idx}`,
+      isDraft: !!v.pendingEditId,
+    })));
+  };
+
+  return (
+    <select
+      value={currentVersionId}
+      onFocus={load}
+      onClick={(e) => e.stopPropagation()}
+      onChange={(e) => { if (e.target.value !== currentVersionId) onSwap(stemId, e.target.value); }}
+      style={{ fontSize: '11px', padding: '2px 6px', background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 4, color: 'var(--text-secondary)', cursor: 'pointer', flexShrink: 0, maxWidth: 100 }}
+    >
+      {versions === null ? (
+        <option value={currentVersionId}>{currentVersionId.slice(0, 8)}</option>
+      ) : (
+        versions.map((v) => (
+          <option key={v.id} value={v.id}>{v.label}{v.isDraft ? ' · draft' : ''}</option>
+        ))
+      )}
+    </select>
   );
 }
 

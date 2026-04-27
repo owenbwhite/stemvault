@@ -1,18 +1,21 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 
 export interface StemTrack {
   id: string;
   name: string;
   category?: string | null;
+  fileType?: 'AUDIO' | 'MIDI';
   url: string;
+  onNameClick?: () => void;
 }
 
 interface MixPlayerProps {
   stems: StemTrack[];
   autoPlay?: boolean;
+  renderStemExtra?: (stem: StemTrack) => React.ReactNode;
 }
 
-export function MixPlayer({ stems, autoPlay }: MixPlayerProps) {
+export function MixPlayer({ stems, autoPlay, renderStemExtra }: MixPlayerProps) {
   const [loaded, setLoaded] = useState(0);
   const [ready, setReady] = useState(false);
   const [playing, setPlaying] = useState(false);
@@ -208,8 +211,9 @@ export function MixPlayer({ stems, autoPlay }: MixPlayerProps) {
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
         {stems.map((s) => {
           const isMuted = muted[s.id] ?? false;
+          const stemDuration = buffersRef.current[s.id]?.duration ?? 0;
           return (
-            <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <button
                 onClick={() => toggleMute(s.id)}
                 title={isMuted ? 'Unmute' : 'Mute'}
@@ -222,12 +226,27 @@ export function MixPlayer({ stems, autoPlay }: MixPlayerProps) {
               >
                 {isMuted ? '✕' : '◉'}
               </button>
-              <span style={{ fontSize: '11px', color: isMuted ? 'var(--text-muted)' : 'var(--text-secondary)', width: 110, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textDecoration: isMuted ? 'line-through' : 'none' }}>
-                {s.name}
-              </span>
-              {s.category && (
-                <span style={{ fontSize: '10px', color: 'var(--text-muted)', background: 'var(--bg-hover)', padding: '1px 6px', borderRadius: '999px', border: '1px solid var(--border)', flexShrink: 0 }}>
-                  {s.category}
+              {s.onNameClick ? (
+                <button
+                  onClick={s.onNameClick}
+                  style={{ fontSize: '11px', color: isMuted ? 'var(--text-muted)' : 'var(--text-secondary)', width: 90, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textDecoration: isMuted ? 'line-through' : 'none', background: 'none', border: 'none', padding: 0, cursor: 'pointer', textAlign: 'left', flexShrink: 0 }}
+                >
+                  {s.name}
+                </button>
+              ) : (
+                <span style={{ fontSize: '11px', color: isMuted ? 'var(--text-muted)' : 'var(--text-secondary)', width: 90, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textDecoration: isMuted ? 'line-through' : 'none', flexShrink: 0 }}>
+                  {s.name}
+                </span>
+              )}
+              {s.fileType && (
+                <span style={{ fontSize: '9px', fontWeight: 600, padding: '1px 5px', borderRadius: '999px', flexShrink: 0, letterSpacing: '0.3px', border: '1px solid var(--border)', color: s.fileType === 'MIDI' ? '#a78bfa' : 'var(--text-muted)', background: s.fileType === 'MIDI' ? 'rgba(167,139,250,0.1)' : 'transparent' }}>
+                  {s.fileType}
+                </span>
+              )}
+              {renderStemExtra?.(s)}
+              {stemDuration > 0 && (
+                <span style={{ fontSize: '10px', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', flexShrink: 0 }}>
+                  {fmt(stemDuration)}
                 </span>
               )}
               <input
@@ -240,7 +259,7 @@ export function MixPlayer({ stems, autoPlay }: MixPlayerProps) {
                 onChange={(e) => setGain(s.id, parseFloat(e.target.value))}
                 style={{ flex: 1, accentColor: 'var(--accent)', opacity: isMuted ? 0.35 : 1 }}
               />
-              <span style={{ fontSize: '10px', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', width: 30, textAlign: 'right' }}>
+              <span style={{ fontSize: '10px', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', width: 30, textAlign: 'right', flexShrink: 0 }}>
                 {isMuted ? '—' : `${Math.round((gains[s.id] ?? 1) * 100)}%`}
               </span>
             </div>

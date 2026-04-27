@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { generateClient } from 'aws-amplify/data';
 import { getUrl } from 'aws-amplify/storage';
@@ -30,8 +30,8 @@ export function TrackDetail() {
   const [projectOwnerId, setProjectOwnerId] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>('current');
   const [masterMixStems, setMasterMixStems] = useState<StemTrack[] | null>(null);
-  const [masterMixSnapshotKey, setMasterMixSnapshotKey] = useState<string | null>(null);
   const [loadingMasterMix, setLoadingMasterMix] = useState(false);
+  const autoLoadRef = useRef(false);
   const [showBulkUpload, setShowBulkUpload] = useState(false);
   const [showAddStem, setShowAddStem] = useState(false);
   const [showCreateEdit, setShowCreateEdit] = useState(false);
@@ -91,32 +91,41 @@ export function TrackDetail() {
           const key = res.data?.proxyS3Key ?? res.data?.s3Key;
           if (!key) return null;
           const { url } = await getUrl({ path: key, options: { expiresIn: 3600 } });
-          return { id: stemId, name: stem.name, category: stem.stemCategory, url: url.toString() } as StemTrack;
+          return {
+            id: stemId,
+            name: stem.name,
+            fileType: stem.type === 'MIDI' ? 'MIDI' : 'AUDIO',
+            url: url.toString(),
+            onNameClick: () => navigate(`/project/${projectId}/track/${trackId}/stem/${stemId}`),
+          } as StemTrack;
         } catch {
           return null;
         }
       })
     );
     setMasterMixStems(results.filter(Boolean) as StemTrack[]);
-    setMasterMixSnapshotKey(JSON.stringify(snapshot));
     setLoadingMasterMix(false);
   };
 
-  const handleCommitToMain = async () => {
-    if (!trackId) return;
-    const activeStemsList = stems.filter((s) => s.type !== 'MIX' && s.activeVersionId && s.isActive !== false);
-    const snapshot: Snapshot = {};
-    for (const s of activeStemsList) if (s.activeVersionId) snapshot[s.id] = s.activeVersionId;
-    const encoded = encodeSnapshot(snapshot);
-    await client.models.Track.update({ id: trackId, mainSnapshot: encoded });
-    setTrack((t) => t ? { ...t, mainSnapshot: encoded } : t);
-    setMasterMixStems(null);
-    setMasterMixSnapshotKey(null);
-  };
+  // Auto-load the mix once track + stems are ready
+  useEffect(() => {
+    if (autoLoadRef.current || loading || !track || stems.length === 0) return;
+    const snapshot = decodeSnapshot(track.mainSnapshot);
+    if (Object.keys(snapshot).length === 0) return;
+    autoLoadRef.current = true;
+    loadMasterMix(snapshot);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, track, stems]);
 
-  const handleToggleStemActive = async (e: React.MouseEvent, stem: Stem) => {
-    e.stopPropagation();
-    await client.models.Stem.update({ id: stem.id, isActive: stem.isActive === false ? true : false });
+  const handleHotswapInMain = async (stemId: string, versionId: string) => {
+    if (!trackId || !track) return;
+    const current = decodeSnapshot(track.mainSnapshot);
+    const next = { ...current, [stemId]: versionId };
+    const encoded = encodeSnapshot(next);
+    await client.models.Track.update({ id: trackId, mainSnapshot: encoded });
+    await client.models.Stem.update({ id: stemId, activeVersionId: versionId });
+    setTrack((t) => t ? { ...t, mainSnapshot: encoded } : t);
+    await loadMasterMix(next);
   };
 
   const handleAddStem = async () => {
@@ -138,15 +147,10 @@ export function TrackDetail() {
     }
   };
 
-  const handleDeleteStem = async (e: React.MouseEvent, stemId: string) => {
-    e.stopPropagation();
-    if (!confirm('Delete this stem and all its versions?')) return;
-    await client.models.Stem.delete({ id: stemId });
-  };
 
   const stemItems = stems.filter((s) => s.type !== 'MIX');
-  const activeCount = stemItems.filter((s) => s.activeVersionId && s.isActive !== false).length;
   const mainSnapshot = track ? decodeSnapshot(track.mainSnapshot) : {};
+  const untrackedStems = stemItems.filter((s) => !mainSnapshot[s.id] && s.activeVersionId);
   const openERs = editRequests.filter((er) => er.status === 'OPEN');
   const closedERs = editRequests.filter((er) => er.status !== 'OPEN');
 
@@ -178,9 +182,6 @@ export function TrackDetail() {
             <>
               <button className="btn-secondary" onClick={() => setShowAddStem(true)}>+ Add stem</button>
               <button className="btn-secondary" onClick={() => setShowBulkUpload(true)}>↑ Upload stems</button>
-              <button className="btn-secondary" onClick={handleCommitToMain} disabled={activeCount === 0}>
-                ↑ Commit to main
-              </button>
             </>
           )}
           {tab === 'edits' && (
@@ -218,48 +219,10 @@ export function TrackDetail() {
       {/* ── Current tab ─────────────────────────────────────────────────────── */}
       {tab === 'current' && (
         <>
-          <div className="card" style={{ marginBottom: '24px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: masterMixStems ? '16px' : 0 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                <span style={{ fontSize: '11px', fontWeight: 600, color: 'var(--accent-green)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                  ⎇ Main
-                </span>
-                {Object.keys(mainSnapshot).length > 0 && (
-                  <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
-                    {Object.keys(mainSnapshot).length} stems
-                  </span>
-                )}
-              </div>
-              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                {Object.keys(mainSnapshot).length === 0 ? (
-                  <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>No main mix yet</span>
-                ) : !masterMixStems ? (
-                  <button className="btn-secondary btn-sm" onClick={() => loadMasterMix(mainSnapshot)} disabled={loadingMasterMix}>
-                    {loadingMasterMix ? 'Loading…' : '▶ Load mix'}
-                  </button>
-                ) : (
-                  <>
-                    {masterMixSnapshotKey !== JSON.stringify(mainSnapshot) && (
-                      <button className="btn-secondary btn-sm" onClick={() => loadMasterMix(mainSnapshot)} style={{ fontSize: '11px', color: 'var(--accent)' }}>
-                        ⟳ Reload
-                      </button>
-                    )}
-                    <button className="btn-ghost btn-sm" onClick={() => { setMasterMixStems(null); setMasterMixSnapshotKey(null); }} style={{ color: 'var(--text-muted)', fontSize: '11px' }}>
-                      Unload
-                    </button>
-                  </>
-                )}
-              </div>
-            </div>
-            {masterMixStems && <MixPlayer stems={masterMixStems} />}
-          </div>
-
-          <p className="section-title">Stems ({stemItems.length})</p>
-
-          {stemItems.length === 0 ? (
+          {Object.keys(mainSnapshot).length === 0 && !loadingMasterMix ? (
             <div className="empty-state">
               <div className="empty-state-icon">🎚️</div>
-              <p>No stems yet.{isOwner ? ' Upload stems to get started.' : ' The owner has not added stems yet.'}</p>
+              <p>No main mix yet.{isOwner ? ' Upload stems to get started.' : ' The owner has not added stems yet.'}</p>
               {isOwner && (
                 <div style={{ display: 'flex', gap: '8px' }}>
                   <button className="btn-secondary" onClick={() => setShowAddStem(true)}>Add stem</button>
@@ -267,17 +230,51 @@ export function TrackDetail() {
                 </div>
               )}
             </div>
+          ) : loadingMasterMix || !masterMixStems ? (
+            <div className="card" style={{ marginBottom: 24 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, color: 'var(--text-muted)', fontSize: '13px', padding: '4px 0' }}>
+                <span style={{ animation: 'spin 1s linear infinite', display: 'inline-block' }}>⟳</span>
+                Loading mix…
+              </div>
+            </div>
           ) : (
-            stemItems.map((stem) => (
-              <StemRow
-                key={stem.id}
-                stem={stem}
-                isOwner={isOwner}
-                onClick={() => navigate(`/project/${projectId}/track/${trackId}/stem/${stem.id}`)}
-                onDelete={(e) => handleDeleteStem(e, stem.id)}
-                onToggleActive={(e) => handleToggleStemActive(e, stem)}
+            <div className="card" style={{ marginBottom: 24 }}>
+              <MixPlayer
+                stems={masterMixStems}
+                renderStemExtra={(s) => (
+                  <StemVersionSelect
+                    stemId={s.id}
+                    currentVersionId={mainSnapshot[s.id]}
+                    onSwap={handleHotswapInMain}
+                  />
+                )}
               />
-            ))
+            </div>
+          )}
+
+          {/* Stems added but not yet in the main mix — owner only */}
+          {isOwner && untrackedStems.length > 0 && (
+            <>
+              <p className="section-title" style={{ marginTop: 8, color: 'var(--text-muted)' }}>
+                Not in mix ({untrackedStems.length})
+              </p>
+              {untrackedStems.map((stem) => (
+                <div key={stem.id} className="version-row" style={{ cursor: 'default', opacity: 0.6 }}>
+                  <span className="version-label">{stem.name}</span>
+                  <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
+                    <button
+                      className="btn-secondary btn-sm"
+                      onClick={() => handleHotswapInMain(stem.id, stem.activeVersionId!)}
+                    >
+                      Add to mix
+                    </button>
+                    <button className="btn-ghost btn-sm" onClick={() => navigate(`/project/${projectId}/track/${trackId}/stem/${stem.id}`)}>
+                      History →
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </>
           )}
         </>
       )}
@@ -428,47 +425,41 @@ function EditRequestRow({ er, onClick }: { er: EditRequest; onClick: () => void 
   );
 }
 
-function StemRow({ stem, isOwner, onClick, onDelete, onToggleActive }: {
-  stem: Stem;
-  isOwner: boolean;
-  onClick: () => void;
-  onDelete: (e: React.MouseEvent) => void;
-  onToggleActive: (e: React.MouseEvent) => void;
+function StemVersionSelect({ stemId, currentVersionId, onSwap }: {
+  stemId: string;
+  currentVersionId: string | undefined;
+  onSwap: (stemId: string, versionId: string) => void;
 }) {
-  const typeClass: Record<string, string> = {
-    AUDIO: 'badge-audio', MIDI: 'badge-midi', INSTRUMENT: 'badge-instrument', MIX: 'badge-mix',
+  const [versions, setVersions] = useState<Array<{ id: string; label: string }> | null>(null);
+
+  const load = async () => {
+    if (versions) return;
+    const res = await client.models.StemVersion.list({ filter: { stemId: { eq: stemId } } });
+    const published = (res.data ?? [])
+      .filter((v) => !v.pendingEditId)
+      .sort((a, b) => new Date(b.createdAt!).getTime() - new Date(a.createdAt!).getTime());
+    setVersions(published.map((v, idx) => ({
+      id: v.id,
+      label: v.versionLabel ?? `v${published.length - idx}`,
+    })));
   };
-  const inactive = stem.isActive === false;
+
+  if (!currentVersionId) return null;
+
   return (
-    <div className="track-row" onClick={onClick} style={{ cursor: 'pointer', opacity: inactive ? 0.5 : 1 }}>
-      <div className="track-name">{stem.name}</div>
-      <span className={`badge ${typeClass[stem.type ?? 'AUDIO']}`}>{stem.type ?? 'AUDIO'}</span>
-      {stem.stemCategory && (
-        <span style={{ fontSize: '11px', color: 'var(--text-secondary)', background: 'var(--bg-hover)', padding: '2px 8px', borderRadius: '999px', border: '1px solid var(--border)' }}>
-          {stem.stemCategory}
-        </span>
+    <select
+      value={currentVersionId}
+      onFocus={(e) => { e.stopPropagation(); load(); }}
+      onClick={(e) => e.stopPropagation()}
+      onChange={(e) => { e.stopPropagation(); if (e.target.value !== currentVersionId) onSwap(stemId, e.target.value); }}
+      style={{ fontSize: '11px', padding: '2px 6px', background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 4, color: 'var(--text-secondary)', cursor: 'pointer', flexShrink: 0, maxWidth: 100 }}
+    >
+      {versions === null ? (
+        <option value={currentVersionId}>{currentVersionId.slice(0, 8)}</option>
+      ) : (
+        versions.map((v) => <option key={v.id} value={v.id}>{v.label}</option>)
       )}
-      {inactive ? (
-        <span style={{ fontSize: '10px', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>⊘ inactive</span>
-      ) : stem.activeVersionId ? (
-        <span style={{ fontSize: '10px', color: 'var(--accent-green)', fontFamily: 'var(--font-mono)' }}>● active</span>
-      ) : null}
-      <div className="track-controls">
-        <button className="btn-secondary btn-sm" onClick={(e) => { e.stopPropagation(); onClick(); }}>Open →</button>
-        {isOwner && (
-          <>
-            <button
-              className="btn-ghost btn-sm"
-              onClick={onToggleActive}
-              style={{ color: inactive ? 'var(--accent-green)' : 'var(--text-muted)', fontSize: '11px' }}
-            >
-              {inactive ? 'Reactivate' : 'Deactivate'}
-            </button>
-            <button className="btn-ghost btn-sm" onClick={onDelete} style={{ color: 'var(--text-muted)' }}>✕</button>
-          </>
-        )}
-      </div>
-    </div>
+    </select>
   );
 }
 
