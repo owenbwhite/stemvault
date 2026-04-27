@@ -15,7 +15,7 @@ const TYPE_COLORS: Record<string, string> = {
   LP: '#a78bfa',
 };
 
-const KEY_OPTIONS = [
+export const KEY_OPTIONS = [
   'C major', 'C# major', 'D major', 'D# major', 'E major', 'F major',
   'F# major', 'G major', 'G# major', 'A major', 'A# major', 'B major',
   'C minor', 'C# minor', 'D minor', 'D# minor', 'E minor', 'F minor',
@@ -31,6 +31,18 @@ interface EditProjectForm {
   type: 'SINGLE' | 'EP' | 'LP';
 }
 
+interface EditTrackForm {
+  title: string;
+  bpm: string;
+  keySignature: string;
+}
+
+interface AddTrackForm {
+  title: string;
+  bpm: string;
+  keySignature: string;
+}
+
 export function ProjectDetail() {
   const { projectId } = useParams<{ projectId: string }>();
   const { user } = useAuthenticator((ctx) => [ctx.user]);
@@ -40,8 +52,12 @@ export function ProjectDetail() {
   const [tracks, setTracks] = useState<Track[]>([]);
   const [showAddTrack, setShowAddTrack] = useState(false);
   const [showEditProject, setShowEditProject] = useState(false);
-  const [newTrackTitle, setNewTrackTitle] = useState('');
+  const [showEditMarketing, setShowEditMarketing] = useState(false);
+  const [addTrackForm, setAddTrackForm] = useState<AddTrackForm>({ title: '', bpm: '', keySignature: '' });
   const [editForm, setEditForm] = useState<EditProjectForm | null>(null);
+  const [marketingForm, setMarketingForm] = useState('');
+  const [editingTrack, setEditingTrack] = useState<Track | null>(null);
+  const [editTrackForm, setEditTrackForm] = useState<EditTrackForm | null>(null);
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(true);
 
@@ -74,6 +90,20 @@ export function ProjectDetail() {
     setShowEditProject(true);
   };
 
+  const openEditMarketing = () => {
+    setMarketingForm(project?.marketingNotes ?? '');
+    setShowEditMarketing(true);
+  };
+
+  const openEditTrack = (track: Track) => {
+    setEditingTrack(track);
+    setEditTrackForm({
+      title: track.title,
+      bpm: track.bpm ? String(track.bpm) : '',
+      keySignature: track.keySignature ?? '',
+    });
+  };
+
   const handleUpdateProject = async () => {
     if (!editForm || !projectId || !editForm.title.trim()) return;
     setSaving(true);
@@ -94,20 +124,68 @@ export function ProjectDetail() {
     }
   };
 
+  const handleUpdateMarketing = async () => {
+    if (!projectId) return;
+    setSaving(true);
+    try {
+      const res = await client.models.Project.update({
+        id: projectId,
+        marketingNotes: marketingForm.trim() || undefined,
+      });
+      if (res.data) setProject(res.data);
+      setShowEditMarketing(false);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleUpdateTrack = async () => {
+    if (!editingTrack || !editTrackForm || !editTrackForm.title.trim()) return;
+    setSaving(true);
+    try {
+      await client.models.Track.update({
+        id: editingTrack.id,
+        title: editTrackForm.title.trim(),
+        bpm: editTrackForm.bpm ? parseInt(editTrackForm.bpm, 10) : undefined,
+        keySignature: editTrackForm.keySignature || undefined,
+      });
+      setEditingTrack(null);
+      setEditTrackForm(null);
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const handleAddTrack = async () => {
-    if (!newTrackTitle.trim() || !projectId) return;
+    if (!addTrackForm.title.trim() || !projectId) return;
     setSaving(true);
     try {
       await client.models.Track.create({
-        title: newTrackTitle.trim(),
+        title: addTrackForm.title.trim(),
         projectId,
         sortOrder: tracks.length,
+        bpm: addTrackForm.bpm ? parseInt(addTrackForm.bpm, 10) : undefined,
+        keySignature: addTrackForm.keySignature || undefined,
       });
-      setNewTrackTitle('');
+      setAddTrackForm({ title: '', bpm: '', keySignature: '' });
       setShowAddTrack(false);
     } finally {
       setSaving(false);
     }
+  };
+
+  const handleMoveTrack = async (e: React.MouseEvent, trackId: string, dir: 'up' | 'down') => {
+    e.stopPropagation();
+    const idx = tracks.findIndex((t) => t.id === trackId);
+    if (idx < 0) return;
+    const swapIdx = dir === 'up' ? idx - 1 : idx + 1;
+    if (swapIdx < 0 || swapIdx >= tracks.length) return;
+    const a = tracks[idx];
+    const b = tracks[swapIdx];
+    await Promise.all([
+      client.models.Track.update({ id: a.id, sortOrder: b.sortOrder ?? swapIdx }),
+      client.models.Track.update({ id: b.id, sortOrder: a.sortOrder ?? idx }),
+    ]);
   };
 
   const handleDeleteTrack = async (e: React.MouseEvent, id: string) => {
@@ -144,8 +222,6 @@ export function ProjectDetail() {
             <h1 className="page-title">{project.title}</h1>
           </div>
           <div className="meta-row">
-            {project.bpm && <span className="meta-item"><strong>{project.bpm}</strong> BPM</span>}
-            {project.keySignature && <span className="meta-item"><strong>{project.keySignature}</strong></span>}
             {project.genre && <span className="meta-item">{project.genre}</span>}
           </div>
           {project.description && (
@@ -166,6 +242,7 @@ export function ProjectDetail() {
         </div>
       </div>
 
+      {/* ── Track list ─────────────────────────────────────────────────────── */}
       <p className="section-title">Tracks ({tracks.length})</p>
 
       {tracks.length === 0 ? (
@@ -188,12 +265,41 @@ export function ProjectDetail() {
               {String(idx + 1).padStart(2, '0')}
             </span>
             <div className="track-name">{track.title}</div>
+            {track.bpm && (
+              <span className="meta-item" style={{ fontSize: '11px' }}>{track.bpm} BPM</span>
+            )}
+            {track.keySignature && (
+              <span className="meta-item" style={{ fontSize: '11px' }}>{track.keySignature}</span>
+            )}
             {track.isRemix && (
               <span style={{ fontSize: '10px', fontWeight: 600, color: '#a78bfa', border: '1px solid #a78bfa', padding: '1px 6px', borderRadius: '4px' }}>
                 REMIX
               </span>
             )}
             <div className="track-controls">
+              {isOwner && (
+                <>
+                  <button
+                    className="btn-ghost btn-sm"
+                    title="Move up"
+                    onClick={(e) => handleMoveTrack(e, track.id, 'up')}
+                    disabled={idx === 0}
+                    style={{ padding: '1px 6px', color: 'var(--text-muted)', opacity: idx === 0 ? 0.3 : 1 }}
+                  >↑</button>
+                  <button
+                    className="btn-ghost btn-sm"
+                    title="Move down"
+                    onClick={(e) => handleMoveTrack(e, track.id, 'down')}
+                    disabled={idx === tracks.length - 1}
+                    style={{ padding: '1px 6px', color: 'var(--text-muted)', opacity: idx === tracks.length - 1 ? 0.3 : 1 }}
+                  >↓</button>
+                  <button
+                    className="btn-ghost btn-sm"
+                    onClick={(e) => { e.stopPropagation(); openEditTrack(track); }}
+                    style={{ color: 'var(--text-muted)' }}
+                  >Edit</button>
+                </>
+              )}
               <button
                 className="btn-secondary btn-sm"
                 onClick={(e) => { e.stopPropagation(); navigate(`/project/${projectId}/track/${track.id}`); }}
@@ -213,25 +319,106 @@ export function ProjectDetail() {
         ))
       )}
 
+      {/* ── Marketing ──────────────────────────────────────────────────────── */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 40, marginBottom: 8 }}>
+        <p className="section-title" style={{ margin: 0 }}>Marketing</p>
+        {isOwner && (
+          <button className="btn-ghost btn-sm" onClick={openEditMarketing} style={{ color: 'var(--text-muted)', fontSize: '11px' }}>
+            Edit
+          </button>
+        )}
+      </div>
+
+      {project.marketingNotes ? (
+        <div className="card">
+          <p style={{ margin: 0, fontSize: '13px', color: 'var(--text-secondary)', whiteSpace: 'pre-wrap', lineHeight: 1.6 }}>
+            {project.marketingNotes}
+          </p>
+        </div>
+      ) : (
+        <div className="empty-state" style={{ padding: '24px 0' }}>
+          <p style={{ margin: 0 }}>No marketing notes yet.{isOwner ? ' Click Edit to add release info, links, and promo notes.' : ''}</p>
+        </div>
+      )}
+
+      {/* ── Modals ─────────────────────────────────────────────────────────── */}
+
       {showAddTrack && (
         <div className="modal-overlay" onClick={() => setShowAddTrack(false)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
+          <div className="modal" onClick={(e) => e.stopPropagation()} style={{ width: '480px' }}>
             <h2 className="modal-title">Add track</h2>
             <div className="form-group">
               <label className="form-label">Title *</label>
               <input
                 type="text"
-                placeholder="e.g. Track 1, Chorus, Verse 2"
-                value={newTrackTitle}
-                onChange={(e) => setNewTrackTitle(e.target.value)}
+                placeholder="e.g. Track 1, Intro, Verse"
+                value={addTrackForm.title}
+                onChange={(e) => setAddTrackForm((f) => ({ ...f, title: e.target.value }))}
                 autoFocus
                 onKeyDown={(e) => e.key === 'Enter' && handleAddTrack()}
               />
             </div>
+            <div className="form-row">
+              <div className="form-group" style={{ margin: 0 }}>
+                <label className="form-label">BPM</label>
+                <input
+                  type="number" min={20} max={300}
+                  value={addTrackForm.bpm}
+                  onChange={(e) => setAddTrackForm((f) => ({ ...f, bpm: e.target.value }))}
+                />
+              </div>
+              <div className="form-group" style={{ margin: 0 }}>
+                <label className="form-label">Key</label>
+                <select value={addTrackForm.keySignature} onChange={(e) => setAddTrackForm((f) => ({ ...f, keySignature: e.target.value }))}>
+                  <option value="">—</option>
+                  {KEY_OPTIONS.map((k) => <option key={k} value={k}>{k}</option>)}
+                </select>
+              </div>
+            </div>
             <div className="modal-actions">
               <button className="btn-secondary" onClick={() => setShowAddTrack(false)}>Cancel</button>
-              <button className="btn-primary" onClick={handleAddTrack} disabled={saving || !newTrackTitle.trim()}>
+              <button className="btn-primary" onClick={handleAddTrack} disabled={saving || !addTrackForm.title.trim()}>
                 {saving ? 'Adding…' : 'Add track'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {editingTrack && editTrackForm && (
+        <div className="modal-overlay" onClick={() => { setEditingTrack(null); setEditTrackForm(null); }}>
+          <div className="modal" onClick={(e) => e.stopPropagation()} style={{ width: '480px' }}>
+            <h2 className="modal-title">Edit track</h2>
+            <div className="form-group">
+              <label className="form-label">Title *</label>
+              <input
+                type="text"
+                value={editTrackForm.title}
+                onChange={(e) => setEditTrackForm((f) => f ? { ...f, title: e.target.value } : f)}
+                autoFocus
+              />
+            </div>
+            <div className="form-row">
+              <div className="form-group" style={{ margin: 0 }}>
+                <label className="form-label">BPM</label>
+                <input
+                  type="number" min={20} max={300}
+                  value={editTrackForm.bpm}
+                  onChange={(e) => setEditTrackForm((f) => f ? { ...f, bpm: e.target.value } : f)}
+                />
+              </div>
+              <div className="form-group" style={{ margin: 0 }}>
+                <label className="form-label">Key</label>
+                <select value={editTrackForm.keySignature} onChange={(e) => setEditTrackForm((f) => f ? { ...f, keySignature: e.target.value } : f)}>
+                  <option value="">—</option>
+                  {KEY_OPTIONS.map((k) => <option key={k} value={k}>{k}</option>)}
+                </select>
+              </div>
+            </div>
+            <div className="modal-actions">
+              <button className="btn-secondary" onClick={() => { setEditingTrack(null); setEditTrackForm(null); }} disabled={saving}>Cancel</button>
+              <button className="btn-primary" onClick={handleUpdateTrack} disabled={saving || !editTrackForm.title.trim()}>
+                {saving ? 'Saving…' : 'Save changes'}
               </button>
             </div>
           </div>
@@ -284,18 +471,6 @@ export function ProjectDetail() {
             </div>
             <div className="form-row">
               <div className="form-group" style={{ margin: 0 }}>
-                <label className="form-label">BPM</label>
-                <input type="number" min={20} max={300} value={editForm.bpm}
-                  onChange={(e) => setEditForm((f) => f ? { ...f, bpm: e.target.value } : f)} />
-              </div>
-              <div className="form-group" style={{ margin: 0 }}>
-                <label className="form-label">Key</label>
-                <select value={editForm.keySignature} onChange={(e) => setEditForm((f) => f ? { ...f, keySignature: e.target.value } : f)}>
-                  <option value="">—</option>
-                  {KEY_OPTIONS.map((k) => <option key={k} value={k}>{k}</option>)}
-                </select>
-              </div>
-              <div className="form-group" style={{ margin: 0 }}>
                 <label className="form-label">Genre</label>
                 <input
                   type="text"
@@ -309,6 +484,33 @@ export function ProjectDetail() {
               <button className="btn-secondary" onClick={() => setShowEditProject(false)} disabled={saving}>Cancel</button>
               <button className="btn-primary" onClick={handleUpdateProject} disabled={saving || !editForm.title.trim()}>
                 {saving ? 'Saving…' : 'Save changes'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showEditMarketing && (
+        <div className="modal-overlay" onClick={() => setShowEditMarketing(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()} style={{ width: '520px' }}>
+            <h2 className="modal-title">Marketing notes</h2>
+            <p style={{ margin: '0 0 16px', fontSize: '13px', color: 'var(--text-secondary)' }}>
+              Release info, DSP links, promo notes, press contacts — anything relevant.
+            </p>
+            <div className="form-group">
+              <textarea
+                rows={8}
+                placeholder="Release date: 2026-XX-XX&#10;Platforms: Spotify, Apple Music, Bandcamp&#10;Press kit: https://...&#10;&#10;Notes..."
+                value={marketingForm}
+                onChange={(e) => setMarketingForm(e.target.value)}
+                style={{ resize: 'vertical', fontFamily: 'var(--font-mono)', fontSize: '12px' }}
+                autoFocus
+              />
+            </div>
+            <div className="modal-actions">
+              <button className="btn-secondary" onClick={() => setShowEditMarketing(false)} disabled={saving}>Cancel</button>
+              <button className="btn-primary" onClick={handleUpdateMarketing} disabled={saving}>
+                {saving ? 'Saving…' : 'Save'}
               </button>
             </div>
           </div>

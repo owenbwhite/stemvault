@@ -9,6 +9,7 @@ const schema = a.schema({
       bpm: a.integer(),
       keySignature: a.string(),
       genre: a.string(),
+      marketingNotes: a.string(),
       ownerId: a.string().required(),
       tracks: a.hasMany('Track', 'projectId'),
       collaborators: a.hasMany('Collaborator', 'projectId'),
@@ -25,6 +26,8 @@ const schema = a.schema({
       project: a.belongsTo('Project', 'projectId'),
       title: a.string().required(),
       sortOrder: a.integer(),
+      bpm: a.integer(),
+      keySignature: a.string(),
       // Canonical snapshot: { stemId → stemVersionId }
       mainSnapshot: a.json(),
       isRemix: a.boolean(),

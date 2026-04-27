@@ -6,6 +6,7 @@ import { useAuthenticator } from '@aws-amplify/ui-react';
 import type { Schema } from '../../amplify/data/resource';
 import { type Snapshot, encodeSnapshot, decodeSnapshot } from './snapshotUtils';
 import { BulkUploadModal, type StemCategory } from './BulkUploadModal';
+import { KEY_OPTIONS } from './ProjectDetail';
 import { MixPlayer, type StemTrack } from './MixPlayer';
 
 const client = generateClient<Schema>();
@@ -35,6 +36,8 @@ export function TrackDetail() {
   const [showBulkUpload, setShowBulkUpload] = useState(false);
   const [showAddStem, setShowAddStem] = useState(false);
   const [showCreateEdit, setShowCreateEdit] = useState(false);
+  const [showEditTrack, setShowEditTrack] = useState(false);
+  const [editTrackForm, setEditTrackForm] = useState<{ title: string; bpm: string; keySignature: string } | null>(null);
   const [newStemName, setNewStemName] = useState('');
   const [newStemType, setNewStemType] = useState<StemType>('AUDIO');
   const [saving, setSaving] = useState(false);
@@ -148,6 +151,24 @@ export function TrackDetail() {
   };
 
 
+  const handleUpdateTrack = async () => {
+    if (!editTrackForm || !trackId || !editTrackForm.title.trim()) return;
+    setSaving(true);
+    try {
+      const res = await client.models.Track.update({
+        id: trackId,
+        title: editTrackForm.title.trim(),
+        bpm: editTrackForm.bpm ? parseInt(editTrackForm.bpm, 10) : undefined,
+        keySignature: editTrackForm.keySignature || undefined,
+      });
+      if (res.data) setTrack(res.data);
+      setShowEditTrack(false);
+      setEditTrackForm(null);
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const stemItems = stems.filter((s) => s.type !== 'MIX');
   const mainSnapshot = track ? decodeSnapshot(track.mainSnapshot) : {};
   const untrackedStems = stemItems.filter((s) => !mainSnapshot[s.id] && s.activeVersionId);
@@ -176,8 +197,24 @@ export function TrackDetail() {
               </span>
             )}
           </div>
+          <div className="meta-row">
+            {track.bpm && <span className="meta-item"><strong>{track.bpm}</strong> BPM</span>}
+            {track.keySignature && <span className="meta-item"><strong>{track.keySignature}</strong></span>}
+          </div>
         </div>
         <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+          {isOwner && (
+            <button
+              className="btn-ghost btn-sm"
+              style={{ color: 'var(--text-muted)' }}
+              onClick={() => {
+                setEditTrackForm({ title: track.title, bpm: track.bpm ? String(track.bpm) : '', keySignature: track.keySignature ?? '' });
+                setShowEditTrack(true);
+              }}
+            >
+              Edit track
+            </button>
+          )}
           {tab === 'current' && isOwner && (
             <>
               <button className="btn-secondary" onClick={() => setShowAddStem(true)}>+ Add stem</button>
@@ -386,6 +423,46 @@ export function TrackDetail() {
               <button className="btn-secondary" onClick={() => setShowAddStem(false)}>Cancel</button>
               <button className="btn-primary" onClick={handleAddStem} disabled={saving || !newStemName.trim()}>
                 {saving ? 'Adding…' : 'Add stem'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showEditTrack && editTrackForm && (
+        <div className="modal-overlay" onClick={() => { setShowEditTrack(false); setEditTrackForm(null); }}>
+          <div className="modal" onClick={(e) => e.stopPropagation()} style={{ width: '480px' }}>
+            <h2 className="modal-title">Edit track</h2>
+            <div className="form-group">
+              <label className="form-label">Title *</label>
+              <input
+                type="text"
+                value={editTrackForm.title}
+                onChange={(e) => setEditTrackForm((f) => f ? { ...f, title: e.target.value } : f)}
+                autoFocus
+              />
+            </div>
+            <div className="form-row">
+              <div className="form-group" style={{ margin: 0 }}>
+                <label className="form-label">BPM</label>
+                <input
+                  type="number" min={20} max={300}
+                  value={editTrackForm.bpm}
+                  onChange={(e) => setEditTrackForm((f) => f ? { ...f, bpm: e.target.value } : f)}
+                />
+              </div>
+              <div className="form-group" style={{ margin: 0 }}>
+                <label className="form-label">Key</label>
+                <select value={editTrackForm.keySignature} onChange={(e) => setEditTrackForm((f) => f ? { ...f, keySignature: e.target.value } : f)}>
+                  <option value="">—</option>
+                  {KEY_OPTIONS.map((k) => <option key={k} value={k}>{k}</option>)}
+                </select>
+              </div>
+            </div>
+            <div className="modal-actions">
+              <button className="btn-secondary" onClick={() => { setShowEditTrack(false); setEditTrackForm(null); }} disabled={saving}>Cancel</button>
+              <button className="btn-primary" onClick={handleUpdateTrack} disabled={saving || !editTrackForm.title.trim()}>
+                {saving ? 'Saving…' : 'Save changes'}
               </button>
             </div>
           </div>
