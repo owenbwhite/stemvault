@@ -6,6 +6,7 @@ import { fetchAuthSession } from 'aws-amplify/auth';
 import type { Schema } from '../../amplify/data/resource';
 import { MixPlayer, type StemTrack } from './MixPlayer';
 import { type Snapshot, encodeSnapshot, decodeSnapshot } from './snapshotUtils';
+import { STEM_CATEGORIES, classifyStem, type StemCategory } from './BulkUploadModal';
 
 const client = generateClient<Schema>();
 
@@ -40,6 +41,9 @@ export function EditDetail() {
 
   // Open ER state
   const [showOpenER, setShowOpenER] = useState(false);
+
+  // Add new stem state
+  const [showAddStem, setShowAddStem] = useState(false);
 
   useEffect(() => {
     if (!editId || !trackId) return;
@@ -175,6 +179,9 @@ export function EditDetail() {
           )}
         </div>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+          <button className="btn-secondary" onClick={() => setShowAddStem(true)}>
+            + Add stem
+          </button>
           <button
             className="btn-primary"
             onClick={() => setShowOpenER(true)}
@@ -343,6 +350,21 @@ export function EditDetail() {
           onCreated={(er: EditRequest) => {
             setShowOpenER(false);
             navigate(`/project/${projectId}/track/${trackId}/edit-request/${er.id}`);
+          }}
+        />
+      )}
+
+      {/* Add new stem modal */}
+      {showAddStem && (
+        <AddStemToEditModal
+          trackId={trackId!}
+          editId={editId!}
+          existingStemCount={stems.length}
+          onClose={() => setShowAddStem(false)}
+          onCreated={async (stemId, versionId) => {
+            const next = { ...editSnapshot, [stemId]: versionId };
+            await updateSnapshot(next);
+            setShowAddStem(false);
           }}
         />
       )}
@@ -524,6 +546,161 @@ function OpenERModal({ trackId, editId, editSnapshot, onClose, onCreated }: Open
           <button className="btn-secondary" onClick={onClose} disabled={saving}>Cancel</button>
           <button className="btn-primary" onClick={handleCreate} disabled={saving || !title.trim()}>
             {saving ? 'Opening…' : 'Open edit request'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Add New Stem to Edit Modal ────────────────────────────────────────────────
+
+interface AddStemToEditModalProps {
+  trackId: string;
+  editId: string;
+  existingStemCount: number;
+  onClose: () => void;
+  onCreated: (stemId: string, versionId: string) => void;
+}
+
+function AddStemToEditModal({ trackId, editId, existingStemCount, onClose, onCreated }: AddStemToEditModalProps) {
+  const [name, setName] = useState('');
+  const [category, setCategory] = useState<StemCategory | ''>('');
+  const [file, setFile] = useState<File | null>(null);
+  const [notes, setNotes] = useState('');
+  const [uploading, setUploading] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0] ?? null;
+    setFile(f);
+    if (f && !name.trim()) {
+      const stem = f.name.replace(/\.[^/.]+$/, '');
+      setName(stem);
+      if (!category) setCategory(classifyStem(f.name));
+    }
+  };
+
+  const handleCreate = async () => {
+    if (!name.trim() || !file) return;
+    setUploading(true);
+    setError(null);
+    try {
+      // Create the Stem record
+      const stemRes = await client.models.Stem.create({
+        trackId,
+        name: name.trim(),
+        type: 'AUDIO',
+        stemCategory: category || undefined,
+        sortOrder: existingStemCount,
+        isActive: true,
+      });
+      if (stemRes.errors) throw new Error(stemRes.errors[0].message);
+      const stemId = stemRes.data!.id;
+
+      // Upload file
+      const ext = file.name.split('.').pop() ?? 'wav';
+      const { identityId } = await fetchAuthSession();
+      const entityId = identityId ?? 'unknown';
+      const s3Key = `stems/${entityId}/stems/${stemId}/${Date.now()}.${ext}`;
+
+      await uploadData({
+        path: s3Key,
+        data: file,
+        options: {
+          contentType: file.type || 'application/octet-stream',
+          onProgress: ({ transferredBytes, totalBytes }) => {
+            if (totalBytes) setProgress(Math.round((transferredBytes / totalBytes) * 100));
+          },
+        },
+      }).result;
+
+      // Create StemVersion as a draft
+      const vRes = await client.models.StemVersion.create({
+        stemId,
+        s3Key,
+        versionLabel: 'v1',
+        notes: notes.trim() || undefined,
+        fileSizeBytes: file.size,
+        pendingEditId: editId,
+      });
+      if (vRes.errors) throw new Error(vRes.errors[0].message);
+
+      onCreated(stemId, vRes.data!.id);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to create stem');
+      setUploading(false);
+    }
+  };
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()} style={{ width: '480px' }}>
+        <h2 className="modal-title">Add new stem</h2>
+        <p style={{ margin: '0 0 16px', fontSize: '13px', color: 'var(--text-secondary)' }}>
+          Creates a new stem on this track, with the uploaded file as a draft version scoped to this edit.
+        </p>
+
+        <div className="form-group">
+          <label className="form-label">File *</label>
+          <input
+            type="file"
+            accept=".wav,.aiff,.aif,.flac,.mp3,.ogg"
+            onChange={handleFileChange}
+            style={{ padding: '6px 8px', cursor: 'pointer' }}
+          />
+          {file && (
+            <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: 4 }}>
+              {file.name} — {(file.size / 1024 / 1024).toFixed(2)} MB
+            </div>
+          )}
+        </div>
+
+        <div className="form-group">
+          <label className="form-label">Stem name *</label>
+          <input
+            type="text"
+            placeholder="e.g. Kick, Lead Synth, Vocal"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+          />
+        </div>
+
+        <div className="form-group">
+          <label className="form-label">Category</label>
+          <select value={category} onChange={(e) => setCategory(e.target.value as StemCategory | '')}>
+            <option value="">— None —</option>
+            {STEM_CATEGORIES.map((c) => (
+              <option key={c} value={c}>{c}</option>
+            ))}
+          </select>
+        </div>
+
+        <div className="form-group">
+          <label className="form-label">Notes</label>
+          <input
+            type="text"
+            placeholder="Optional notes about this version"
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+          />
+        </div>
+
+        {uploading && (
+          <div style={{ marginBottom: 8 }}>
+            <div style={{ height: 4, background: 'var(--border)', borderRadius: 2, overflow: 'hidden' }}>
+              <div style={{ width: `${progress}%`, height: '100%', background: 'var(--accent)', transition: 'width 0.2s' }} />
+            </div>
+            <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: 4 }}>Uploading… {progress}%</div>
+          </div>
+        )}
+        {error && <p style={{ color: 'var(--accent-red)', fontSize: '13px', margin: '0 0 8px' }}>{error}</p>}
+
+        <div className="modal-actions">
+          <button className="btn-secondary" onClick={onClose} disabled={uploading}>Cancel</button>
+          <button className="btn-primary" onClick={handleCreate} disabled={uploading || !name.trim() || !file}>
+            {uploading ? `Uploading ${progress}%…` : 'Create stem'}
           </button>
         </div>
       </div>
