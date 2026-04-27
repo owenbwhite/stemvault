@@ -68,14 +68,6 @@ export function classifyStem(filename: string): StemCategory {
   return 'Other';
 }
 
-function filenameToStemName(filename: string): string {
-  const base = filename.replace(/\.[^.]+$/, '');
-  const trimmed = base.replace(/^\d+[\s_\-\.]+/, '');
-  return trimmed
-    .replace(/[_\-]+/g, ' ')
-    .replace(/\b\w/g, (c) => c.toUpperCase())
-    .trim() || base;
-}
 
 function isAudio(filename: string) {
   return /\.(wav|aiff?|flac|mp3|ogg|m4a|aac)$/i.test(filename);
@@ -96,7 +88,6 @@ type UploadStatus = 'idle' | 'uploading' | 'done' | 'error';
 
 interface StemRow {
   file: File;
-  stemName: string;
   category: StemCategory;
   fileType: 'AUDIO' | 'MIDI' | 'INSTRUMENT';
   status: UploadStatus;
@@ -126,7 +117,6 @@ export function BulkUploadModal({ trackId, existingStemCount, onClose }: BulkUpl
         .filter((f) => !existing.has(f.name))
         .map((f) => ({
           file: f,
-          stemName: filenameToStemName(f.name),
           category: classifyStem(f.name),
           fileType: fileTypeFromName(f.name),
           status: 'idle' as UploadStatus,
@@ -161,7 +151,7 @@ export function BulkUploadModal({ trackId, existingStemCount, onClose }: BulkUpl
         try {
           // 1. Create Stem record
           const stemResult = await client.models.Stem.create({
-            name: row.stemName,
+            name: row.category,
             type: row.fileType,
             stemCategory: row.category,
             trackId,
@@ -260,11 +250,10 @@ export function BulkUploadModal({ trackId, existingStemCount, onClose }: BulkUpl
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
               <thead>
                 <tr style={{ color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                  <th style={{ textAlign: 'left', padding: '4px 6px', width: '28%' }}>Stem name</th>
-                  <th style={{ textAlign: 'left', padding: '4px 6px', width: '22%' }}>Category</th>
-                  <th style={{ textAlign: 'left', padding: '4px 6px', width: '10%' }}>Type</th>
-                  <th style={{ textAlign: 'left', padding: '4px 6px', width: '22%' }}>File</th>
-                  <th style={{ textAlign: 'left', padding: '4px 6px', width: '12%' }}>Status</th>
+                  <th style={{ textAlign: 'left', padding: '4px 6px', width: '30%' }}>Type</th>
+                  <th style={{ textAlign: 'left', padding: '4px 6px', width: '10%' }}>Format</th>
+                  <th style={{ textAlign: 'left', padding: '4px 6px', width: '28%' }}>File</th>
+                  <th style={{ textAlign: 'left', padding: '4px 6px', width: '16%' }}>Status</th>
                   <th style={{ padding: '4px 6px', width: '6%' }} />
                 </tr>
               </thead>
@@ -278,14 +267,6 @@ export function BulkUploadModal({ trackId, existingStemCount, onClose }: BulkUpl
                                   row.status === 'done' ? 'rgba(16,185,129,0.05)' : undefined,
                     }}
                   >
-                    <td style={{ padding: '6px 6px' }}>
-                      <input
-                        value={row.stemName}
-                        onChange={(e) => updateRow(idx, 'stemName', e.target.value)}
-                        disabled={row.status !== 'idle'}
-                        style={{ fontSize: '12px', padding: '3px 6px' }}
-                      />
-                    </td>
                     <td style={{ padding: '6px 6px' }}>
                       <select
                         value={row.category}

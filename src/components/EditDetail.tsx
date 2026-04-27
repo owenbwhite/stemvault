@@ -605,19 +605,15 @@ function EditBulkUploadModal({ trackId, editId, stems, editSnapshot, existingSte
       const existing = new Set(prev.map((r) => r.file.name));
       const next = accepted
         .filter((f) => !existing.has(f.name))
-        .map((f) => {
-          const category = classifyStem(f.name);
-          const matchedStem = stems.find((s) => s.stemCategory === category);
-          return {
-            file: f,
-            fileType: /\.midi?$/i.test(f.name) ? 'MIDI' as const : 'AUDIO' as const,
-            detectedCategory: category,
-            targetStemId: matchedStem?.id ?? null,
-            newCategory: category,
-            status: 'idle' as const,
-            progress: 0,
-          };
-        });
+        .map((f) => ({
+          file: f,
+          fileType: /\.midi?$/i.test(f.name) ? 'MIDI' as const : 'AUDIO' as const,
+          detectedCategory: classifyStem(f.name),
+          targetStemId: null,
+          newCategory: classifyStem(f.name),
+          status: 'idle' as const,
+          progress: 0,
+        }));
       return [...prev, ...next];
     });
   };
@@ -788,7 +784,7 @@ function EditBulkUploadModal({ trackId, editId, stems, editSnapshot, existingSte
 
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 16, flexShrink: 0 }}>
           <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
-            {rows.length > 0 && !uploading && !allDone && `${idleCount} file${idleCount !== 1 ? 's' : ''} ready — map to existing stems or create new`}
+            {rows.length > 0 && !uploading && !allDone && `${idleCount} file${idleCount !== 1 ? 's' : ''} ready — select a stem type or map to an existing stem`}
             {uploading && `${doneCount} / ${rows.length} uploaded…`}
             {allDone && <span style={{ color: errorCount ? 'var(--accent)' : 'var(--accent-green)' }}>{doneCount} uploaded{errorCount ? `, ${errorCount} failed` : ''}</span>}
           </div>
