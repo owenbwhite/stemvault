@@ -5,6 +5,7 @@ import { uploadData } from 'aws-amplify/storage';
 import { fetchAuthSession } from 'aws-amplify/auth';
 import { useAuthenticator } from '@aws-amplify/ui-react';
 import type { Schema } from '../../amplify/data/resource';
+import { encodeSnapshot } from './snapshotUtils';
 import { parseAls, scanFromFiles, matchGroupsToFiles } from '../utils/parseAls';
 import type { AlsGroup } from '../utils/parseAls';
 import { STEM_CATEGORIES } from './BulkUploadModal';
@@ -224,7 +225,7 @@ export function ProjectDetail() {
       const { identityId } = await fetchAuthSession();
       const entityId = identityId ?? 'unknown';
 
-      await Promise.all(
+      const snapshotEntries = (await Promise.all(
         alsImportData.rows.map(async (row, idx) => {
           const stemRes = await client.models.Stem.create({
             trackId,
@@ -234,9 +235,9 @@ export function ProjectDetail() {
             sortOrder: idx,
             isActive: true,
           });
-          if (stemRes.errors || !stemRes.data) return;
+          if (stemRes.errors || !stemRes.data) return null;
           const stemId = stemRes.data.id;
-          if (!row.file) return;
+          if (!row.file) return null;
 
           const ext = row.file.name.split('.').pop() ?? 'wav';
           const s3Key = `stems/${entityId}/stems/${stemId}/${Date.now()}.${ext}`;
@@ -249,11 +250,16 @@ export function ProjectDetail() {
           const versionRes = await client.models.StemVersion.create({
             stemId, s3Key, versionLabel: 'v1', fileSizeBytes: row.file.size,
           });
-          if (versionRes.errors || !versionRes.data) return;
+          if (versionRes.errors || !versionRes.data) return null;
           await client.models.Stem.update({ id: stemId, activeVersionId: versionRes.data.id });
           setAlsImportProgress(p => ({ ...p, current: p.current + 1 }));
+          return [stemId, versionRes.data.id] as [string, string];
         })
-      );
+      )).filter((e): e is [string, string] => e !== null);
+
+      if (snapshotEntries.length > 0) {
+        await client.models.Track.update({ id: trackId, mainSnapshot: encodeSnapshot(Object.fromEntries(snapshotEntries)) });
+      }
 
       closeAddTrack();
       navigate(`/project/${projectId}/track/${trackId}`);

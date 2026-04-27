@@ -181,7 +181,7 @@ export function TrackDetail() {
       const { identityId } = await fetchAuthSession();
       const entityId = identityId ?? 'unknown';
 
-      await Promise.all(
+      const snapshotEntries = (await Promise.all(
         alsImportData.rows.map(async (row, idx) => {
           let stemId: string;
           if (row.targetStemId) {
@@ -195,11 +195,11 @@ export function TrackDetail() {
               sortOrder: stems.length + idx,
               isActive: true,
             });
-            if (stemRes.errors || !stemRes.data) return;
+            if (stemRes.errors || !stemRes.data) return null;
             stemId = stemRes.data.id;
           }
 
-          if (!row.file) return;
+          if (!row.file) return null;
 
           const ext = row.file.name.split('.').pop() ?? 'wav';
           const s3Key = `stems/${entityId}/stems/${stemId}/${Date.now()}.${ext}`;
@@ -217,12 +217,22 @@ export function TrackDetail() {
             versionLabel: nextLabel,
             fileSizeBytes: row.file.size,
           });
-          if (versionRes.errors || !versionRes.data) return;
+          if (versionRes.errors || !versionRes.data) return null;
           await client.models.Stem.update({ id: stemId, activeVersionId: versionRes.data.id });
 
           setAlsImportProgress(p => ({ ...p, current: p.current + 1 }));
+          return [stemId, versionRes.data.id] as [string, string];
         })
-      );
+      )).filter((e): e is [string, string] => e !== null);
+
+      if (snapshotEntries.length > 0) {
+        const current = decodeSnapshot(track?.mainSnapshot);
+        const next = { ...current, ...Object.fromEntries(snapshotEntries) };
+        const encoded = encodeSnapshot(next);
+        await client.models.Track.update({ id: trackId, mainSnapshot: encoded });
+        setTrack(t => t ? { ...t, mainSnapshot: encoded } : t);
+        autoLoadRef.current = false;
+      }
 
       setAlsImportData(null);
     } finally {
