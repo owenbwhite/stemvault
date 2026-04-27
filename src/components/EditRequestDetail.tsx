@@ -88,10 +88,15 @@ export function EditRequestDetail() {
       });
 
       // Sync each stem's activeVersionId to match the new main
+      // Also publish any draft StemVersions (clear pendingEditId)
       await Promise.all(
-        Object.entries(proposed).map(([stemId, versionId]) =>
-          client.models.Stem.update({ id: stemId, activeVersionId: versionId })
-        )
+        Object.entries(proposed).map(async ([stemId, versionId]) => {
+          await client.models.Stem.update({ id: stemId, activeVersionId: versionId });
+          const v = await client.models.StemVersion.get({ id: versionId });
+          if (v.data?.pendingEditId) {
+            await client.models.StemVersion.update({ id: versionId, pendingEditId: undefined });
+          }
+        })
       );
 
       await client.models.EditRequest.update({ id: er.id, status: 'MERGED' });

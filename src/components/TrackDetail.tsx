@@ -12,8 +12,11 @@ const client = generateClient<Schema>();
 
 type Track = Schema['Track']['type'];
 type Stem = Schema['Stem']['type'];
+type Edit = Schema['Edit']['type'];
 type EditRequest = Schema['EditRequest']['type'];
 type StemType = 'AUDIO' | 'MIDI' | 'INSTRUMENT' | 'MIX';
+
+type Tab = 'current' | 'edits' | 'edit-requests';
 
 export function TrackDetail() {
   const { projectId, trackId } = useParams<{ projectId: string; trackId: string }>();
@@ -22,8 +25,10 @@ export function TrackDetail() {
 
   const [track, setTrack] = useState<Track | null>(null);
   const [stems, setStems] = useState<Stem[]>([]);
+  const [edits, setEdits] = useState<Edit[]>([]);
   const [editRequests, setEditRequests] = useState<EditRequest[]>([]);
   const [projectOwnerId, setProjectOwnerId] = useState<string | null>(null);
+  const [tab, setTab] = useState<Tab>('current');
   const [masterMixStems, setMasterMixStems] = useState<StemTrack[] | null>(null);
   const [masterMixSnapshotKey, setMasterMixSnapshotKey] = useState<string | null>(null);
   const [loadingMasterMix, setLoadingMasterMix] = useState(false);
@@ -55,6 +60,14 @@ export function TrackDetail() {
       next: ({ items }) => setStems([...items].sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))),
     });
 
+    const editSub = client.models.Edit.observeQuery({
+      filter: { trackId: { eq: trackId } },
+    }).subscribe({
+      next: ({ items }) => setEdits(
+        [...items].sort((a, b) => new Date(b.createdAt!).getTime() - new Date(a.createdAt!).getTime())
+      ),
+    });
+
     const erSub = client.models.EditRequest.observeQuery({
       filter: { trackId: { eq: trackId } },
     }).subscribe({
@@ -63,8 +76,8 @@ export function TrackDetail() {
       ),
     });
 
-    return () => { stemSub.unsubscribe(); erSub.unsubscribe(); };
-  }, [trackId]);
+    return () => { stemSub.unsubscribe(); editSub.unsubscribe(); erSub.unsubscribe(); };
+  }, [trackId, projectId]);
 
   const loadMasterMix = async (snapshot: Snapshot) => {
     if (Object.keys(snapshot).length === 0) return;
@@ -132,7 +145,7 @@ export function TrackDetail() {
   };
 
   const stemItems = stems.filter((s) => s.type !== 'MIX');
-  const activeCount = stemItems.filter((s) => s.activeVersionId).length;
+  const activeCount = stemItems.filter((s) => s.activeVersionId && s.isActive !== false).length;
   const mainSnapshot = track ? decodeSnapshot(track.mainSnapshot) : {};
   const openERs = editRequests.filter((er) => er.status === 'OPEN');
   const closedERs = editRequests.filter((er) => er.status !== 'OPEN');
@@ -161,112 +174,157 @@ export function TrackDetail() {
           </div>
         </div>
         <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-          {isOwner && (
+          {tab === 'current' && isOwner && (
             <>
               <button className="btn-secondary" onClick={() => setShowAddStem(true)}>+ Add stem</button>
               <button className="btn-secondary" onClick={() => setShowBulkUpload(true)}>↑ Upload stems</button>
-              <button
-                className="btn-secondary"
-                onClick={handleCommitToMain}
-                disabled={activeCount === 0}
-                title="Save current active stem versions to main"
-              >
+              <button className="btn-secondary" onClick={handleCommitToMain} disabled={activeCount === 0}>
                 ↑ Commit to main
               </button>
             </>
           )}
-          <button
-            className="btn-primary"
-            onClick={() => setShowCreateEdit(true)}
-            disabled={activeCount === 0}
-          >
-            + Create edit request
-          </button>
+          {tab === 'edits' && (
+            <button className="btn-primary" onClick={() => setShowCreateEdit(true)}>+ New edit</button>
+          )}
         </div>
       </div>
 
-      {/* Master mix */}
-      <div className="card" style={{ marginBottom: '24px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: masterMixStems ? '16px' : 0 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <span style={{ fontSize: '11px', fontWeight: 600, color: 'var(--accent-green)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-              ⎇ Master Mix
-            </span>
-            {Object.keys(mainSnapshot).length > 0 && (
-              <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
-                main · {Object.keys(mainSnapshot).length} stems
-              </span>
-            )}
-          </div>
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            {Object.keys(mainSnapshot).length === 0 ? (
-              <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Commit stems to main to enable playback</span>
-            ) : !masterMixStems ? (
-              <button className="btn-secondary btn-sm" onClick={() => loadMasterMix(mainSnapshot)} disabled={loadingMasterMix}>
-                {loadingMasterMix ? 'Loading…' : '▶ Load mix'}
-              </button>
-            ) : (
-              <>
-                {masterMixSnapshotKey !== JSON.stringify(mainSnapshot) && (
-                  <button className="btn-secondary btn-sm" onClick={() => loadMasterMix(mainSnapshot)} style={{ fontSize: '11px', color: 'var(--accent)' }}>
-                    ⟳ Reload
-                  </button>
-                )}
-                <button className="btn-ghost btn-sm" onClick={() => { setMasterMixStems(null); setMasterMixSnapshotKey(null); }} style={{ color: 'var(--text-muted)', fontSize: '11px' }}>
-                  Unload
-                </button>
-              </>
-            )}
-          </div>
-        </div>
-        {masterMixStems && <MixPlayer stems={masterMixStems} />}
+      {/* Tabs */}
+      <div style={{ display: 'flex', gap: 4, marginBottom: 24, borderBottom: '1px solid var(--border)', paddingBottom: 0 }}>
+        {(['current', 'edits', 'edit-requests'] as Tab[]).map((t) => {
+          const labels: Record<Tab, string> = {
+            current: 'Current',
+            edits: `Edits${edits.length > 0 ? ` (${edits.length})` : ''}`,
+            'edit-requests': `Edit Requests${openERs.length > 0 ? ` (${openERs.length} open)` : editRequests.length > 0 ? ` (${editRequests.length})` : ''}`,
+          };
+          return (
+            <button
+              key={t}
+              onClick={() => setTab(t)}
+              style={{
+                background: 'none', border: 'none', cursor: 'pointer', padding: '8px 16px',
+                fontSize: '13px', fontWeight: tab === t ? 600 : 400,
+                color: tab === t ? 'var(--text-primary)' : 'var(--text-muted)',
+                borderBottom: tab === t ? '2px solid var(--accent)' : '2px solid transparent',
+                marginBottom: '-1px',
+              }}
+            >
+              {labels[t]}
+            </button>
+          );
+        })}
       </div>
 
-      {/* Edit requests */}
-      {editRequests.length > 0 && (
+      {/* ── Current tab ─────────────────────────────────────────────────────── */}
+      {tab === 'current' && (
         <>
-          <p className="section-title">
-            Edit requests
-            {openERs.length > 0 && (
-              <span style={{ marginLeft: 8, fontWeight: 400, textTransform: 'none', letterSpacing: 0, color: 'var(--accent)' }}>
-                {openERs.length} open
-              </span>
-            )}
-          </p>
-          {openERs.map((er) => (
-            <EditRequestRow key={er.id} er={er} onClick={() => navigate(`/project/${projectId}/track/${trackId}/edit-request/${er.id}`)} />
-          ))}
-          {closedERs.map((er) => (
-            <EditRequestRow key={er.id} er={er} onClick={() => navigate(`/project/${projectId}/track/${trackId}/edit-request/${er.id}`)} />
-          ))}
+          <div className="card" style={{ marginBottom: '24px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: masterMixStems ? '16px' : 0 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <span style={{ fontSize: '11px', fontWeight: 600, color: 'var(--accent-green)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                  ⎇ Main
+                </span>
+                {Object.keys(mainSnapshot).length > 0 && (
+                  <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+                    {Object.keys(mainSnapshot).length} stems
+                  </span>
+                )}
+              </div>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                {Object.keys(mainSnapshot).length === 0 ? (
+                  <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>No main mix yet</span>
+                ) : !masterMixStems ? (
+                  <button className="btn-secondary btn-sm" onClick={() => loadMasterMix(mainSnapshot)} disabled={loadingMasterMix}>
+                    {loadingMasterMix ? 'Loading…' : '▶ Load mix'}
+                  </button>
+                ) : (
+                  <>
+                    {masterMixSnapshotKey !== JSON.stringify(mainSnapshot) && (
+                      <button className="btn-secondary btn-sm" onClick={() => loadMasterMix(mainSnapshot)} style={{ fontSize: '11px', color: 'var(--accent)' }}>
+                        ⟳ Reload
+                      </button>
+                    )}
+                    <button className="btn-ghost btn-sm" onClick={() => { setMasterMixStems(null); setMasterMixSnapshotKey(null); }} style={{ color: 'var(--text-muted)', fontSize: '11px' }}>
+                      Unload
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+            {masterMixStems && <MixPlayer stems={masterMixStems} />}
+          </div>
+
+          <p className="section-title">Stems ({stemItems.length})</p>
+
+          {stemItems.length === 0 ? (
+            <div className="empty-state">
+              <div className="empty-state-icon">🎚️</div>
+              <p>No stems yet.{isOwner ? ' Upload stems to get started.' : ' The owner has not added stems yet.'}</p>
+              {isOwner && (
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <button className="btn-secondary" onClick={() => setShowAddStem(true)}>Add stem</button>
+                  <button className="btn-secondary" onClick={() => setShowBulkUpload(true)}>Upload stems</button>
+                </div>
+              )}
+            </div>
+          ) : (
+            stemItems.map((stem) => (
+              <StemRow
+                key={stem.id}
+                stem={stem}
+                isOwner={isOwner}
+                onClick={() => navigate(`/project/${projectId}/track/${trackId}/stem/${stem.id}`)}
+                onDelete={(e) => handleDeleteStem(e, stem.id)}
+                onToggleActive={(e) => handleToggleStemActive(e, stem)}
+              />
+            ))
+          )}
         </>
       )}
 
-      {/* Stems */}
-      <p className="section-title">Stems ({stemItems.length})</p>
-
-      {stemItems.length === 0 ? (
-        <div className="empty-state">
-          <div className="empty-state-icon">🎚️</div>
-          <p>No stems yet. Upload stems to get started.</p>
-          <div style={{ display: 'flex', gap: '8px' }}>
-            <button className="btn-secondary" onClick={() => setShowAddStem(true)}>Add stem</button>
-            <button className="btn-secondary" onClick={() => setShowBulkUpload(true)}>Upload stems</button>
-          </div>
-        </div>
-      ) : (
-        stemItems.map((stem) => (
-          <StemRow
-            key={stem.id}
-            stem={stem}
-            isOwner={isOwner}
-            onClick={() => navigate(`/project/${projectId}/track/${trackId}/stem/${stem.id}`)}
-            onDelete={(e) => handleDeleteStem(e, stem.id)}
-            onToggleActive={(e) => handleToggleStemActive(e, stem)}
-          />
-        ))
+      {/* ── Edits tab ────────────────────────────────────────────────────────── */}
+      {tab === 'edits' && (
+        <>
+          {edits.length === 0 ? (
+            <div className="empty-state">
+              <div className="empty-state-icon">⎇</div>
+              <p>No edits yet. Create an edit to propose changes to this track.</p>
+              <button className="btn-primary" onClick={() => setShowCreateEdit(true)}>New edit</button>
+            </div>
+          ) : (
+            edits.map((edit) => (
+              <EditRow
+                key={edit.id}
+                edit={edit}
+                onClick={() => navigate(`/project/${projectId}/track/${trackId}/edit/${edit.id}`)}
+              />
+            ))
+          )}
+        </>
       )}
 
+      {/* ── Edit Requests tab ────────────────────────────────────────────────── */}
+      {tab === 'edit-requests' && (
+        <>
+          {editRequests.length === 0 ? (
+            <div className="empty-state">
+              <div className="empty-state-icon">↑</div>
+              <p>No edit requests yet. Open an edit request from within an edit.</p>
+            </div>
+          ) : (
+            <>
+              {openERs.map((er) => (
+                <EditRequestRow key={er.id} er={er} onClick={() => navigate(`/project/${projectId}/track/${trackId}/edit-request/${er.id}`)} />
+              ))}
+              {closedERs.map((er) => (
+                <EditRequestRow key={er.id} er={er} onClick={() => navigate(`/project/${projectId}/track/${trackId}/edit-request/${er.id}`)} />
+              ))}
+            </>
+          )}
+        </>
+      )}
+
+      {/* ── Modals ───────────────────────────────────────────────────────────── */}
       {showBulkUpload && (
         <BulkUploadModal
           trackId={trackId!}
@@ -279,12 +337,11 @@ export function TrackDetail() {
         <CreateEditModal
           trackId={trackId!}
           createdBy={user?.userId ?? 'unknown'}
-          stems={stemItems}
           mainSnapshot={mainSnapshot}
           onClose={() => setShowCreateEdit(false)}
-          onCreated={(er) => {
+          onCreated={(edit) => {
             setShowCreateEdit(false);
-            navigate(`/project/${projectId}/track/${trackId}/edit-request/${er.id}`);
+            navigate(`/project/${projectId}/track/${trackId}/edit/${edit.id}`);
           }}
         />
       )}
@@ -326,10 +383,24 @@ export function TrackDetail() {
   );
 }
 
+// ── Sub-components ────────────────────────────────────────────────────────────
+
+function EditRow({ edit, onClick }: { edit: Edit; onClick: () => void }) {
+  return (
+    <div className="version-row" onClick={onClick} style={{ cursor: 'pointer' }}>
+      <span className="version-label">{edit.name}</span>
+      {edit.description && <span className="version-notes">{edit.description}</span>}
+      <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+        {Object.keys(edit.snapshot ? JSON.parse(edit.snapshot as string) : {}).length} stems
+      </span>
+      <span className="version-meta">{new Date(edit.createdAt!).toLocaleDateString()}</span>
+    </div>
+  );
+}
+
 function EditRequestRow({ er, onClick }: { er: EditRequest; onClick: () => void }) {
   const statusColor = er.status === 'MERGED' ? 'var(--accent-green)' : er.status === 'CLOSED' ? 'var(--text-muted)' : 'var(--accent)';
   const statusLabel = er.status === 'MERGED' ? '⎇ merged' : er.status === 'CLOSED' ? '✕ closed' : '● open';
-
   return (
     <div className="version-row" onClick={onClick} style={{ cursor: 'pointer' }}>
       <span className="version-label">{er.title}</span>
@@ -351,7 +422,6 @@ function StemRow({ stem, isOwner, onClick, onDelete, onToggleActive }: {
     AUDIO: 'badge-audio', MIDI: 'badge-midi', INSTRUMENT: 'badge-instrument', MIX: 'badge-mix',
   };
   const inactive = stem.isActive === false;
-
   return (
     <div className="track-row" onClick={onClick} style={{ cursor: 'pointer', opacity: inactive ? 0.5 : 1 }}>
       <div className="track-name">{stem.name}</div>
@@ -374,11 +444,10 @@ function StemRow({ stem, isOwner, onClick, onDelete, onToggleActive }: {
               className="btn-ghost btn-sm"
               onClick={onToggleActive}
               style={{ color: inactive ? 'var(--accent-green)' : 'var(--text-muted)', fontSize: '11px' }}
-              title={inactive ? 'Reactivate stem' : 'Deactivate stem'}
             >
               {inactive ? 'Reactivate' : 'Deactivate'}
             </button>
-            <button className="btn-ghost btn-sm" onClick={onDelete} style={{ color: 'var(--text-muted)' }} title="Delete stem">✕</button>
+            <button className="btn-ghost btn-sm" onClick={onDelete} style={{ color: 'var(--text-muted)' }}>✕</button>
           </>
         )}
       </div>
@@ -386,142 +455,85 @@ function StemRow({ stem, isOwner, onClick, onDelete, onToggleActive }: {
   );
 }
 
+// ── Create Edit Modal ─────────────────────────────────────────────────────────
+
+function nanoid6() {
+  return Math.random().toString(36).slice(2, 8);
+}
+
 interface CreateEditModalProps {
   trackId: string;
   createdBy: string;
-  stems: Stem[];
   mainSnapshot: Snapshot;
   onClose: () => void;
-  onCreated: (er: EditRequest) => void;
+  onCreated: (edit: Edit) => void;
 }
 
-function CreateEditModal({ trackId, createdBy, stems, mainSnapshot, onClose, onCreated }: CreateEditModalProps) {
+function CreateEditModal({ trackId, createdBy, mainSnapshot, onClose, onCreated }: CreateEditModalProps) {
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
-  // Pre-populate from mainSnapshot. Stems in main start selected with their main version.
-  // Stems with a newer activeVersionId (changed) use the active version.
-  // New stems (activeVersionId but not in main) start unchecked.
-  const [selectedVersions, setSelectedVersions] = useState<Snapshot>(() => {
-    const init: Snapshot = {};
-    for (const s of stems) {
-      if (mainSnapshot[s.id]) {
-        // In main: use activeVersionId if available (may be a new version), else main version
-        init[s.id] = s.activeVersionId ?? mainSnapshot[s.id];
-      }
-      // Not in main: leave unchecked (user must explicitly add)
-    }
-    return init;
-  });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // All stems relevant to this modal: in main OR has an active version
-  const relevantStems = stems.filter((s) => mainSnapshot[s.id] || s.activeVersionId);
+  const slug = title.trim()
+    ? `${title.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')}-${nanoid6()}`
+    : '';
 
   const handleCreate = async () => {
     if (!title.trim()) return;
     setSaving(true);
     setError(null);
     try {
-      const editRes = await client.models.Edit.create({
+      const res = await client.models.Edit.create({
         trackId,
-        name: title.trim().toLowerCase().replace(/\s+/g, '-'),
+        name: slug,
         description: description.trim() || undefined,
         createdBy,
-        snapshot: encodeSnapshot(selectedVersions),
+        snapshot: encodeSnapshot(mainSnapshot),
       });
-      if (editRes.errors) throw new Error(editRes.errors[0].message);
-
-      const erRes = await client.models.EditRequest.create({
-        trackId,
-        fromEditId: editRes.data!.id,
-        title: title.trim(),
-        description: description.trim() || undefined,
-        proposedSnapshot: encodeSnapshot(selectedVersions),
-        status: 'OPEN',
-      });
-      if (erRes.errors) throw new Error(erRes.errors[0].message);
-
-      onCreated(erRes.data!);
+      if (res.errors) throw new Error(res.errors[0].message);
+      onCreated(res.data!);
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to create edit request');
+      setError(e instanceof Error ? e.message : 'Failed to create edit');
       setSaving(false);
     }
   };
 
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()} style={{ width: '560px' }}>
-        <h2 className="modal-title">Create edit request</h2>
+      <div className="modal" onClick={(e) => e.stopPropagation()} style={{ width: '480px' }}>
+        <h2 className="modal-title">New edit</h2>
         <p style={{ margin: '0 0 16px', fontSize: '13px', color: 'var(--text-secondary)' }}>
-          Propose stem versions to merge into this track's main mix.
+          An edit is a branch of the current main mix. Make your changes, then open an edit request when ready.
         </p>
 
         <div className="form-group">
           <label className="form-label">Title *</label>
           <input
             type="text"
-            placeholder="e.g. New chorus drop, Tighter kick, Verse 2 rework"
+            placeholder="e.g. Verse rework, New kick, Mix v2"
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             autoFocus
           />
+          {slug && (
+            <div style={{ fontSize: '11px', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', marginTop: 4 }}>
+              id: {slug}
+            </div>
+          )}
         </div>
         <div className="form-group">
           <label className="form-label">Description</label>
-          <textarea rows={2} placeholder="What did you change and why?" value={description}
+          <textarea rows={2} placeholder="What are you changing and why?" value={description}
             onChange={(e) => setDescription(e.target.value)} style={{ resize: 'vertical' }} />
-        </div>
-
-        <p className="form-label" style={{ marginBottom: 8 }}>Proposed mix</p>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 16 }}>
-          {relevantStems.map((s) => {
-            const inMain = !!mainSnapshot[s.id];
-            const isNew = !inMain && !!s.activeVersionId;
-            const isChanged = inMain && s.activeVersionId && s.activeVersionId !== mainSnapshot[s.id];
-            const versionForProposal = s.activeVersionId ?? mainSnapshot[s.id];
-
-            return (
-              <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                <span style={{ fontSize: '12px', color: 'var(--text-primary)', width: 130, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {s.name}
-                </span>
-                {s.stemCategory && (
-                  <span style={{ fontSize: '10px', color: 'var(--text-muted)', background: 'var(--bg-hover)', padding: '1px 6px', borderRadius: '999px', border: '1px solid var(--border)', flexShrink: 0 }}>
-                    {s.stemCategory}
-                  </span>
-                )}
-                {isNew && (
-                  <span style={{ fontSize: '10px', fontWeight: 600, color: 'var(--accent-green)', flexShrink: 0 }}>new</span>
-                )}
-                {isChanged && (
-                  <span style={{ fontSize: '10px', fontWeight: 600, color: 'var(--accent)', flexShrink: 0 }}>updated</span>
-                )}
-                <input
-                  type="checkbox"
-                  checked={!!selectedVersions[s.id]}
-                  onChange={(e) => {
-                    if (e.target.checked && versionForProposal) {
-                      setSelectedVersions((prev) => ({ ...prev, [s.id]: versionForProposal }));
-                    } else {
-                      setSelectedVersions((prev) => { const n = { ...prev }; delete n[s.id]; return n; });
-                    }
-                  }}
-                  disabled={!versionForProposal}
-                  style={{ accentColor: 'var(--accent)', marginLeft: 'auto', flexShrink: 0 }}
-                />
-              </div>
-            );
-          })}
         </div>
 
         {error && <p style={{ color: 'var(--accent-red)', fontSize: '13px', margin: '0 0 8px' }}>{error}</p>}
 
         <div className="modal-actions">
           <button className="btn-secondary" onClick={onClose} disabled={saving}>Cancel</button>
-          <button className="btn-primary" onClick={handleCreate}
-            disabled={saving || !title.trim() || Object.keys(selectedVersions).length === 0}>
-            {saving ? 'Creating…' : 'Create edit request'}
+          <button className="btn-primary" onClick={handleCreate} disabled={saving || !title.trim()}>
+            {saving ? 'Creating…' : 'Create edit'}
           </button>
         </div>
       </div>

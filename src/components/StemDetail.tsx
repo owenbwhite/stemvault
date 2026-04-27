@@ -52,7 +52,9 @@ export function StemDetail() {
       filter: { stemId: { eq: stemId } },
     }).subscribe({
       next: async ({ items }) => {
-        const sorted = [...items].sort(
+        // Exclude draft versions (uploaded through an edit, not yet merged)
+        const published = items.filter((v) => !v.pendingEditId);
+        const sorted = [...published].sort(
           (a, b) => new Date(b.createdAt!).getTime() - new Date(a.createdAt!).getTime()
         );
         const withUrls = await Promise.all(

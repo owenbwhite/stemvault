@@ -6,6 +6,7 @@ import { ProjectDetail } from './components/ProjectDetail';
 import { TrackDetail } from './components/TrackDetail';
 import { StemDetail } from './components/StemDetail';
 import { EditRequestDetail } from './components/EditRequestDetail';
+import { EditDetail } from './components/EditDetail';
 
 function Shell() {
   const { user, signOut } = useAuthenticator((ctx) => [ctx.user]);
@@ -34,6 +35,7 @@ function Shell() {
           <Route path="/project/:projectId" element={<ProjectDetail />} />
           <Route path="/project/:projectId/track/:trackId" element={<TrackDetail />} />
           <Route path="/project/:projectId/track/:trackId/stem/:stemId" element={<StemDetail />} />
+          <Route path="/project/:projectId/track/:trackId/edit/:editId" element={<EditDetail />} />
           <Route path="/project/:projectId/track/:trackId/edit-request/:erId" element={<EditRequestDetail />} />
         </Routes>
       </main>

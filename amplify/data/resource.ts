@@ -68,6 +68,8 @@ const schema = a.schema({
       proxyS3Key: a.string(),
       // Set on remix — references original StemVersion, no S3 copy
       originalVersionId: a.id(),
+      // Set when uploaded through an Edit — nulled out when the ER is merged (published)
+      pendingEditId: a.id(),
       durationSeconds: a.float(),
       sampleRate: a.integer(),
       bitDepth: a.integer(),
