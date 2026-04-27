@@ -223,27 +223,25 @@ export function EditDetail() {
 
           return (
             <div key={stem.id} className="track-row" style={{ cursor: 'default', opacity: included ? 1 : 0.45 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10, flex: 1, minWidth: 0 }}>
-                <input
-                  type="checkbox"
-                  checked={included}
-                  onChange={(e) => handleToggleStem(stem.id, e.target.checked)}
-                  style={{ accentColor: 'var(--accent)', flexShrink: 0 }}
-                  title={included ? 'Remove from edit mix' : 'Include in edit mix'}
-                />
-                <div className="track-name">{stem.name}</div>
-                {stem.stemCategory && (
-                  <span style={{ fontSize: '10px', color: 'var(--text-muted)', background: 'var(--bg-hover)', padding: '1px 6px', borderRadius: '999px', border: '1px solid var(--border)', flexShrink: 0 }}>
-                    {stem.stemCategory}
-                  </span>
-                )}
-                {included && versionLabel && (
-                  <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', flexShrink: 0 }}>
-                    {versionLabel}
-                    {isDraft && <span style={{ color: 'var(--accent)', marginLeft: 4 }}>· draft</span>}
-                  </span>
-                )}
-              </div>
+              <input
+                type="checkbox"
+                checked={included}
+                onChange={(e) => handleToggleStem(stem.id, e.target.checked)}
+                style={{ accentColor: 'var(--accent)', flexShrink: 0 }}
+                title={included ? 'Remove from edit mix' : 'Include in edit mix'}
+              />
+              <div className="track-name">{stem.name}</div>
+              {stem.stemCategory && (
+                <span style={{ fontSize: '10px', color: 'var(--text-muted)', background: 'var(--bg-hover)', padding: '1px 6px', borderRadius: '999px', border: '1px solid var(--border)', flexShrink: 0 }}>
+                  {stem.stemCategory}
+                </span>
+              )}
+              {included && versionLabel && (
+                <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', flexShrink: 0 }}>
+                  {versionLabel}
+                  {isDraft && <span style={{ color: 'var(--accent)', marginLeft: 4 }}>· draft</span>}
+                </span>
+              )}
               <div className="track-controls">
                 {included && (
                   <button
