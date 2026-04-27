@@ -100,10 +100,11 @@ interface StemRow {
 interface BulkUploadModalProps {
   trackId: string;
   existingStemCount: number;
+  existingCategories?: StemCategory[];
   onClose: () => void;
 }
 
-export function BulkUploadModal({ trackId, existingStemCount, onClose }: BulkUploadModalProps) {
+export function BulkUploadModal({ trackId, existingStemCount, existingCategories = [], onClose }: BulkUploadModalProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [rows, setRows] = useState<StemRow[]>([]);
   const [uploading, setUploading] = useState(false);
@@ -268,14 +269,20 @@ export function BulkUploadModal({ trackId, existingStemCount, onClose }: BulkUpl
                     }}
                   >
                     <td style={{ padding: '6px 6px' }}>
-                      <select
-                        value={row.category}
-                        onChange={(e) => updateRow(idx, 'category', e.target.value as StemCategory)}
-                        disabled={row.status !== 'idle'}
-                        style={{ fontSize: '12px', padding: '3px 6px' }}
-                      >
-                        {STEM_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
-                      </select>
+                      {(() => {
+                        const takenByBatch = new Set(rows.filter((r, i) => i !== idx && r.status === 'idle').map((r) => r.category));
+                        const available = STEM_CATEGORIES.filter((c) => c === row.category || (!existingCategories.includes(c) && !takenByBatch.has(c)));
+                        return (
+                          <select
+                            value={row.category}
+                            onChange={(e) => updateRow(idx, 'category', e.target.value as StemCategory)}
+                            disabled={row.status !== 'idle'}
+                            style={{ fontSize: '12px', padding: '3px 6px' }}
+                          >
+                            {available.map((c) => <option key={c} value={c}>{c}</option>)}
+                          </select>
+                        );
+                      })()}
                     </td>
                     <td style={{ padding: '6px 6px' }}>
                       <span className={`badge ${row.fileType === 'MIDI' ? 'badge-midi' : 'badge-audio'}`} style={{ fontSize: '10px' }}>

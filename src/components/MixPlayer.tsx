@@ -249,16 +249,18 @@ export function MixPlayer({ stems, autoPlay, renderStemExtra }: MixPlayerProps) 
                   {fmt(stemDuration)}
                 </span>
               )}
-              <input
-                type="range"
-                min={0}
-                max={1}
-                step={0.01}
-                value={gains[s.id] ?? 1}
-                disabled={isMuted}
-                onChange={(e) => setGain(s.id, parseFloat(e.target.value))}
-                style={{ flex: 1, accentColor: 'var(--accent)', opacity: isMuted ? 0.35 : 1 }}
-              />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <input
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.01}
+                  value={gains[s.id] ?? 1}
+                  disabled={isMuted}
+                  onChange={(e) => setGain(s.id, parseFloat(e.target.value))}
+                  style={{ width: '100%', display: 'block', accentColor: 'var(--accent)', opacity: isMuted ? 0.35 : 1, margin: 0 }}
+                />
+              </div>
               <span style={{ fontSize: '10px', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', width: 30, textAlign: 'right', flexShrink: 0 }}>
                 {isMuted ? '—' : `${Math.round((gains[s.id] ?? 1) * 100)}%`}
               </span>

@@ -265,6 +265,7 @@ export function EditDetail() {
           trackId={trackId!}
           editId={editId!}
           existingStemCount={stems.length}
+          existingCategories={stems.filter((s) => s.stemCategory).map((s) => s.stemCategory as StemCategory)}
           onClose={() => setShowAddStem(false)}
           onCreated={async (stemId, versionId) => {
             const next = { ...editSnapshot, [stemId]: versionId };
@@ -301,28 +302,27 @@ function EditVersionSelect({ stemId, editId, currentVersionId, onSwap }: {
 }) {
   const [versions, setVersions] = useState<Array<{ id: string; label: string; isDraft: boolean }> | null>(null);
 
-  const load = async () => {
-    if (versions) return;
-    const res = await client.models.StemVersion.list({ filter: { stemId: { eq: stemId } } });
-    const filtered = (res.data ?? []).filter((v) => !v.pendingEditId || v.pendingEditId === editId);
-    const sorted = [...filtered].sort((a, b) => new Date(b.createdAt!).getTime() - new Date(a.createdAt!).getTime());
-    setVersions(sorted.map((v, idx) => ({
-      id: v.id,
-      label: v.versionLabel ?? `v${sorted.length - idx}`,
-      isDraft: !!v.pendingEditId,
-    })));
-  };
+  useEffect(() => {
+    client.models.StemVersion.list({ filter: { stemId: { eq: stemId } } }).then((res) => {
+      const filtered = (res.data ?? []).filter((v) => !v.pendingEditId || v.pendingEditId === editId);
+      const sorted = [...filtered].sort((a, b) => new Date(b.createdAt!).getTime() - new Date(a.createdAt!).getTime());
+      setVersions(sorted.map((v, idx) => ({
+        id: v.id,
+        label: v.versionLabel ?? `v${sorted.length - idx}`,
+        isDraft: !!v.pendingEditId,
+      })));
+    });
+  }, [stemId, editId]);
 
   return (
     <select
       value={currentVersionId}
-      onFocus={load}
       onClick={(e) => e.stopPropagation()}
       onChange={(e) => { if (e.target.value !== currentVersionId) onSwap(stemId, e.target.value); }}
       style={{ fontSize: '11px', padding: '2px 6px', background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 4, color: 'var(--text-secondary)', cursor: 'pointer', flexShrink: 0, maxWidth: 100 }}
     >
       {versions === null ? (
-        <option value={currentVersionId}>{currentVersionId.slice(0, 8)}</option>
+        <option value={currentVersionId}>…</option>
       ) : (
         versions.map((v) => (
           <option key={v.id} value={v.id}>{v.label}{v.isDraft ? ' · draft' : ''}</option>
@@ -688,16 +688,21 @@ function EditBulkUploadModal({ trackId, editId, stems, editSnapshot, existingSte
                           <option key={s.id} value={s.id}>{s.name}{s.stemCategory ? ` (${s.stemCategory})` : ''}</option>
                         ))}
                       </select>
-                      {!row.targetStemId && (
-                        <select
-                          value={row.newCategory}
-                          onChange={(e) => updateRow(idx, 'newCategory', e.target.value as StemCategory)}
-                          disabled={row.status !== 'idle'}
-                          style={{ fontSize: '12px', padding: '3px 6px', width: '100%', marginTop: 4 }}
-                        >
-                          {STEM_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
-                        </select>
-                      )}
+                      {!row.targetStemId && (() => {
+                        const takenByExisting = new Set(stems.filter((s) => s.stemCategory).map((s) => s.stemCategory));
+                        const takenByBatch = new Set(rows.filter((r, i) => i !== idx && !r.targetStemId && r.status === 'idle').map((r) => r.newCategory));
+                        const available = STEM_CATEGORIES.filter((c) => c === row.newCategory || (!takenByExisting.has(c) && !takenByBatch.has(c)));
+                        return (
+                          <select
+                            value={row.newCategory}
+                            onChange={(e) => updateRow(idx, 'newCategory', e.target.value as StemCategory)}
+                            disabled={row.status !== 'idle'}
+                            style={{ fontSize: '12px', padding: '3px 6px', width: '100%', marginTop: 4 }}
+                          >
+                            {available.map((c) => <option key={c} value={c}>{c}</option>)}
+                          </select>
+                        );
+                      })()}
                     </td>
                     <td style={{ padding: '8px 6px' }}>
                       {row.status === 'idle' && <span style={{ color: 'var(--text-muted)' }}>—</span>}
@@ -750,12 +755,14 @@ interface AddStemToEditModalProps {
   trackId: string;
   editId: string;
   existingStemCount: number;
+  existingCategories: StemCategory[];
   onClose: () => void;
   onCreated: (stemId: string, versionId: string) => void;
 }
 
-function AddStemToEditModal({ trackId, editId, existingStemCount, onClose, onCreated }: AddStemToEditModalProps) {
-  const [category, setCategory] = useState<StemCategory>(STEM_CATEGORIES[0]);
+function AddStemToEditModal({ trackId, editId, existingStemCount, existingCategories, onClose, onCreated }: AddStemToEditModalProps) {
+  const availableCategories = STEM_CATEGORIES.filter((c) => !existingCategories.includes(c));
+  const [category, setCategory] = useState<StemCategory>(availableCategories[0] ?? STEM_CATEGORIES[0]);
   const [file, setFile] = useState<File | null>(null);
   const [notes, setNotes] = useState('');
   const [uploading, setUploading] = useState(false);
@@ -846,7 +853,7 @@ function AddStemToEditModal({ trackId, editId, existingStemCount, onClose, onCre
         <div className="form-group">
           <label className="form-label">Type *</label>
           <select value={category} onChange={(e) => setCategory(e.target.value as StemCategory)}>
-            {STEM_CATEGORIES.map((c) => (
+            {availableCategories.map((c) => (
               <option key={c} value={c}>{c}</option>
             ))}
           </select>

@@ -5,7 +5,7 @@ import { getUrl } from 'aws-amplify/storage';
 import { useAuthenticator } from '@aws-amplify/ui-react';
 import type { Schema } from '../../amplify/data/resource';
 import { type Snapshot, encodeSnapshot, decodeSnapshot } from './snapshotUtils';
-import { BulkUploadModal } from './BulkUploadModal';
+import { BulkUploadModal, type StemCategory } from './BulkUploadModal';
 import { MixPlayer, type StemTrack } from './MixPlayer';
 
 const client = generateClient<Schema>();
@@ -340,6 +340,7 @@ export function TrackDetail() {
         <BulkUploadModal
           trackId={trackId!}
           existingStemCount={stems.length}
+          existingCategories={stems.filter((s) => s.stemCategory).map((s) => s.stemCategory as StemCategory)}
           onClose={() => setShowBulkUpload(false)}
         />
       )}
@@ -432,30 +433,29 @@ function StemVersionSelect({ stemId, currentVersionId, onSwap }: {
 }) {
   const [versions, setVersions] = useState<Array<{ id: string; label: string }> | null>(null);
 
-  const load = async () => {
-    if (versions) return;
-    const res = await client.models.StemVersion.list({ filter: { stemId: { eq: stemId } } });
-    const published = (res.data ?? [])
-      .filter((v) => !v.pendingEditId)
-      .sort((a, b) => new Date(b.createdAt!).getTime() - new Date(a.createdAt!).getTime());
-    setVersions(published.map((v, idx) => ({
-      id: v.id,
-      label: v.versionLabel ?? `v${published.length - idx}`,
-    })));
-  };
+  useEffect(() => {
+    client.models.StemVersion.list({ filter: { stemId: { eq: stemId } } }).then((res) => {
+      const published = (res.data ?? [])
+        .filter((v) => !v.pendingEditId)
+        .sort((a, b) => new Date(b.createdAt!).getTime() - new Date(a.createdAt!).getTime());
+      setVersions(published.map((v, idx) => ({
+        id: v.id,
+        label: v.versionLabel ?? `v${published.length - idx}`,
+      })));
+    });
+  }, [stemId]);
 
   if (!currentVersionId) return null;
 
   return (
     <select
       value={currentVersionId}
-      onFocus={(e) => { e.stopPropagation(); load(); }}
       onClick={(e) => e.stopPropagation()}
       onChange={(e) => { e.stopPropagation(); if (e.target.value !== currentVersionId) onSwap(stemId, e.target.value); }}
       style={{ fontSize: '11px', padding: '2px 6px', background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 4, color: 'var(--text-secondary)', cursor: 'pointer', flexShrink: 0, maxWidth: 100 }}
     >
       {versions === null ? (
-        <option value={currentVersionId}>{currentVersionId.slice(0, 8)}</option>
+        <option value={currentVersionId}>…</option>
       ) : (
         versions.map((v) => <option key={v.id} value={v.id}>{v.label}</option>)
       )}
