@@ -1,13 +1,16 @@
 import { useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { generateClient } from 'aws-amplify/data';
-import { getUrl } from 'aws-amplify/storage';
+import { getUrl, uploadData } from 'aws-amplify/storage';
+import { fetchAuthSession } from 'aws-amplify/auth';
 import { useAuthenticator } from '@aws-amplify/ui-react';
 import type { Schema } from '../../amplify/data/resource';
 import { type Snapshot, encodeSnapshot, decodeSnapshot } from './snapshotUtils';
-import { BulkUploadModal, type StemCategory } from './BulkUploadModal';
+import { BulkUploadModal, STEM_CATEGORIES, type StemCategory } from './BulkUploadModal';
 import { KEY_OPTIONS } from './ProjectDetail';
 import { MixPlayer, type StemTrack } from './MixPlayer';
+import { parseAls, scanFromFiles, matchGroupsToFiles } from '../utils/parseAls';
+import type { AlsGroup } from '../utils/parseAls';
 
 const client = generateClient<Schema>();
 
@@ -18,6 +21,20 @@ type EditRequest = Schema['EditRequest']['type'];
 type StemType = 'AUDIO' | 'MIDI' | 'INSTRUMENT' | 'MIX';
 
 type Tab = 'current' | 'edits' | 'edit-requests';
+
+interface AlsImportRow {
+  group: AlsGroup;
+  category: StemCategory;
+  file: File | null;
+  targetStemId?: string;
+}
+
+interface AlsImportData {
+  bpm: string;
+  key: string;
+  rows: AlsImportRow[];
+  noExports: boolean;
+}
 
 export function TrackDetail() {
   const { projectId, trackId } = useParams<{ projectId: string; trackId: string }>();
@@ -42,6 +59,12 @@ export function TrackDetail() {
   const [newStemType, setNewStemType] = useState<StemType>('AUDIO');
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(true);
+
+  const [alsScanning, setAlsScanning] = useState(false);
+  const [alsImportData, setAlsImportData] = useState<AlsImportData | null>(null);
+  const [alsImporting, setAlsImporting] = useState(false);
+  const [alsImportProgress, setAlsImportProgress] = useState({ current: 0, total: 0 });
+  const alsDirInputRef = useRef<HTMLInputElement>(null);
 
   const isOwner = !!user?.userId && !!projectOwnerId && user.userId === projectOwnerId;
 
@@ -110,13 +133,17 @@ export function TrackDetail() {
     setLoadingMasterMix(false);
   };
 
-  // Auto-load the mix once track + stems are ready
+  // Auto-load the mix once track + stems are ready.
+  // Falls back to stems' activeVersionId when mainSnapshot is empty (e.g. fresh als import).
   useEffect(() => {
     if (autoLoadRef.current || loading || !track || stems.length === 0) return;
     const snapshot = decodeSnapshot(track.mainSnapshot);
-    if (Object.keys(snapshot).length === 0) return;
+    const effectiveSnapshot: Snapshot = Object.keys(snapshot).length > 0
+      ? snapshot
+      : Object.fromEntries(stems.filter(s => s.activeVersionId).map(s => [s.id, s.activeVersionId!]));
+    if (Object.keys(effectiveSnapshot).length === 0) return;
     autoLoadRef.current = true;
-    loadMasterMix(snapshot);
+    loadMasterMix(effectiveSnapshot);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loading, track, stems]);
 
@@ -129,6 +156,82 @@ export function TrackDetail() {
     await client.models.Stem.update({ id: stemId, activeVersionId: versionId });
     setTrack((t) => t ? { ...t, mainSnapshot: encoded } : t);
     await loadMasterMix(next);
+  };
+
+  const handleConfirmAlsImport = async () => {
+    if (!alsImportData || !trackId) return;
+    const filesCount = alsImportData.rows.filter(r => r.file != null).length;
+    setAlsImportProgress({ current: 0, total: filesCount });
+    setAlsImporting(true);
+    try {
+      // Optionally back-fill BPM/key onto the track if it doesn't have them
+      if (track && (alsImportData.bpm || alsImportData.key)) {
+        const needsBpm = !track.bpm && alsImportData.bpm;
+        const needsKey = !track.keySignature && alsImportData.key;
+        if (needsBpm || needsKey) {
+          const res = await client.models.Track.update({
+            id: trackId,
+            ...(needsBpm ? { bpm: parseInt(alsImportData.bpm, 10) } : {}),
+            ...(needsKey ? { keySignature: alsImportData.key } : {}),
+          });
+          if (res.data) setTrack(res.data);
+        }
+      }
+
+      const { identityId } = await fetchAuthSession();
+      const entityId = identityId ?? 'unknown';
+
+      await Promise.all(
+        alsImportData.rows.map(async (row, idx) => {
+          let stemId: string;
+          if (row.targetStemId) {
+            stemId = row.targetStemId;
+          } else {
+            const stemRes = await client.models.Stem.create({
+              trackId,
+              name: row.group.name,
+              stemCategory: row.category,
+              type: 'AUDIO',
+              sortOrder: stems.length + idx,
+              isActive: true,
+            });
+            if (stemRes.errors || !stemRes.data) return;
+            stemId = stemRes.data.id;
+          }
+
+          if (!row.file) return;
+
+          const ext = row.file.name.split('.').pop() ?? 'wav';
+          const s3Key = `stems/${entityId}/stems/${stemId}/${Date.now()}.${ext}`;
+          await uploadData({
+            path: s3Key,
+            data: row.file,
+            options: { contentType: row.file.type || 'application/octet-stream' },
+          }).result;
+
+          const existingVersions = await client.models.StemVersion.list({ filter: { stemId: { eq: stemId } } });
+          const nextLabel = `v${(existingVersions.data?.length ?? 0) + 1}`;
+          const versionRes = await client.models.StemVersion.create({
+            stemId,
+            s3Key,
+            versionLabel: nextLabel,
+            fileSizeBytes: row.file.size,
+          });
+          if (versionRes.errors || !versionRes.data) return;
+          await client.models.Stem.update({ id: stemId, activeVersionId: versionRes.data.id });
+
+          setAlsImportProgress(p => ({ ...p, current: p.current + 1 }));
+        })
+      );
+
+      setAlsImportData(null);
+    } finally {
+      setAlsImporting(false);
+    }
+  };
+
+  const updateAlsRow = (idx: number, category: StemCategory) => {
+    setAlsImportData(d => d ? { ...d, rows: d.rows.map((r, i) => i === idx ? { ...r, category } : r) } : d);
   };
 
   const handleAddStem = async () => {
@@ -219,6 +322,43 @@ export function TrackDetail() {
             <>
               <button className="btn-secondary" onClick={() => setShowAddStem(true)}>+ Add stem</button>
               <button className="btn-secondary" onClick={() => setShowBulkUpload(true)}>↑ Upload stems</button>
+              <button
+                className="btn-secondary"
+                disabled={alsScanning}
+                onClick={() => alsDirInputRef.current?.click()}
+              >
+                {alsScanning ? 'Scanning…' : '↓ Import from .als'}
+              </button>
+              <input
+                ref={alsDirInputRef}
+                type="file"
+                multiple
+                style={{ display: 'none' }}
+                {...{ webkitdirectory: '' }}
+                onChange={async (e) => {
+                  const files = Array.from(e.target.files ?? []);
+                  e.target.value = '';
+                  if (!files.length) return;
+                  setAlsScanning(true);
+                  try {
+                    const { alsFile, audioFiles, hasAudio } = scanFromFiles(files);
+                    if (!alsFile) { alert('No .als file found. Select the Ableton project folder.'); return; }
+                    const als = await parseAls(alsFile);
+                    const matches = matchGroupsToFiles(audioFiles, als.groups);
+                    setAlsImportData({
+                      bpm: als.bpm != null ? String(Math.round(als.bpm)) : '',
+                      key: als.key ?? '',
+                      rows: matches.map(m => {
+                        const existing = stems.find(s => s.stemCategory === m.group.category);
+                        return { group: m.group, category: m.group.category, file: m.file, targetStemId: existing?.id };
+                      }),
+                      noExports: !hasAudio,
+                    });
+                  } finally {
+                    setAlsScanning(false);
+                  }
+                }}
+              />
             </>
           )}
           {tab === 'edits' && (
@@ -373,11 +513,120 @@ export function TrackDetail() {
       )}
 
       {/* ── Modals ───────────────────────────────────────────────────────────── */}
+
+      {alsImportData && (
+        <div className="modal-overlay">
+          <div
+            className="modal"
+            onClick={(e) => e.stopPropagation()}
+            style={{ width: '620px', maxHeight: '85vh', display: 'flex', flexDirection: 'column' }}
+          >
+            <h2 className="modal-title">Import from Ableton</h2>
+
+            {alsImportData.noExports && (
+              <div style={{
+                background: 'rgba(245,158,11,0.1)', border: '1px solid rgba(245,158,11,0.4)',
+                borderRadius: 8, padding: '10px 14px', marginBottom: 12,
+                fontSize: '12px', color: '#f59e0b',
+              }}>
+                No audio files found in this folder. Stems will be created empty — attach files later via "Upload stems".
+              </div>
+            )}
+
+            {(alsImportData.bpm || alsImportData.key) && (
+              <div style={{ display: 'flex', gap: 8, marginBottom: 14 }}>
+                {alsImportData.bpm && !track?.bpm && (
+                  <div className="form-group" style={{ margin: 0 }}>
+                    <label className="form-label">BPM (from .als — will update track)</label>
+                    <input
+                      type="number" min={20} max={300}
+                      value={alsImportData.bpm}
+                      onChange={(e) => setAlsImportData(d => d ? { ...d, bpm: e.target.value } : d)}
+                    />
+                  </div>
+                )}
+                {alsImportData.key && !track?.keySignature && (
+                  <div className="form-group" style={{ margin: 0 }}>
+                    <label className="form-label">Key (from .als — will update track)</label>
+                    <select
+                      value={alsImportData.key}
+                      onChange={(e) => setAlsImportData(d => d ? { ...d, key: e.target.value } : d)}
+                    >
+                      <option value="">—</option>
+                      {KEY_OPTIONS.map((k) => <option key={k} value={k}>{k}</option>)}
+                    </select>
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div style={{ flex: 1, overflowY: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
+                <thead>
+                  <tr style={{ color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                    <th style={{ textAlign: 'left', padding: '4px 6px', width: '28%' }}>Group</th>
+                    <th style={{ textAlign: 'left', padding: '4px 6px', width: '32%' }}>Category</th>
+                    <th style={{ textAlign: 'left', padding: '4px 6px' }}>Audio file</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {alsImportData.rows.map((row, idx) => (
+                    <tr key={row.group.alsId} style={{ borderTop: '1px solid var(--border-subtle)' }}>
+                      <td style={{ padding: '6px 6px', color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)' }}>
+                        {row.group.name}
+                      </td>
+                      <td style={{ padding: '6px 6px' }}>
+                        <select
+                          value={row.category}
+                          onChange={(e) => updateAlsRow(idx, e.target.value as StemCategory)}
+                          disabled={alsImporting}
+                          style={{ fontSize: '12px', padding: '3px 6px' }}
+                        >
+                          {STEM_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+                        </select>
+                      </td>
+                      <td style={{ padding: '6px 6px', color: row.file ? 'var(--text-secondary)' : 'var(--text-muted)', fontFamily: 'var(--font-mono)', fontSize: '11px' }}>
+                        {row.file ? row.file.name : <span style={{ fontStyle: 'italic' }}>— no match</span>}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 16, flexShrink: 0 }}>
+              <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+                {alsImportData.rows.filter(r => r.file).length} of {alsImportData.rows.length} stems matched to audio
+              </span>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button className="btn-secondary" onClick={() => setAlsImportData(null)} disabled={alsImporting}>
+                  Cancel
+                </button>
+                <button
+                  className="btn-primary"
+                  onClick={handleConfirmAlsImport}
+                  disabled={alsImporting}
+                >
+                  {alsImporting
+                    ? alsImportProgress.total > 0
+                      ? `Uploading ${alsImportProgress.current}/${alsImportProgress.total}…`
+                      : 'Creating…'
+                    : `Import ${alsImportData.rows.length} stem${alsImportData.rows.length !== 1 ? 's' : ''}`}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {showBulkUpload && (
         <BulkUploadModal
           trackId={trackId!}
           existingStemCount={stems.length}
           existingCategories={stems.filter((s) => s.stemCategory).map((s) => s.stemCategory as StemCategory)}
+          existingStems={stems
+            .filter((s) => s.stemCategory && s.id)
+            .map((s) => ({ id: s.id, stemCategory: s.stemCategory!, name: s.name }))}
           onClose={() => setShowBulkUpload(false)}
         />
       )}

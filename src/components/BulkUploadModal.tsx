@@ -27,24 +27,24 @@ export function classifyStem(filename: string): StemCategory {
 
   if (/\bkick\b|kik\b|\bbd\b|bass drum/.test(s)) return 'Kick';
   if (/\bsnare\b|\bsnr\b|\bsd\b/.test(s)) return 'Snare';
-  if (/hi ?hat|hihat|\bhh\b|open hat|closed hat/.test(s)) return 'Hi-Hat';
+  if (/hi ?hat|hihat|\bhh\b|open hat|closed hat|\bhats?\b/.test(s)) return 'Hi-Hat';
   if (/\bclap\b|\bclp\b/.test(s)) return 'Clap';
   if (/\btom\b|floor tom/.test(s)) return 'Tom';
   if (/\bcymbal\b|\bcrash\b|\bride\b/.test(s)) return 'Cymbal';
   if (/\brimshot\b|\brim\b/.test(s)) return 'Rimshot';
   if (/\bshaker\b|\btamb\b|\bclave\b|\bcowbell\b/.test(s)) return 'Shaker';
   if (/\bperc(ussion)?\b/.test(s)) return 'Percussion';
-  if (/drum ?loop|loop.{0,6}drum/.test(s)) return 'Drum Loop';
+  if (/drum ?loop|loop.{0,6}drum|\bdrums?\b/.test(s)) return 'Drum Loop';
 
-  if (/sub ?bass|subbass/.test(s)) return 'Sub Bass';
+  if (/sub ?bass|subbass|\b808\b/.test(s)) return 'Sub Bass';
   if (/\bbass\b/.test(s)) return 'Bass';
 
-  if (/\blead\b|\bmelody\b|\bmelo\b/.test(s)) return 'Lead';
-  if (/\bpad\b/.test(s)) return 'Pad';
-  if (/\bchord\b|\bstab\b/.test(s)) return 'Chord';
-  if (/\barp(eggio)?\b/.test(s)) return 'Arp';
+  if (/\bleads?\b|\bmelody\b|\bmelo\b/.test(s)) return 'Lead';
+  if (/\bpads?\b/.test(s)) return 'Pad';
+  if (/\bchords?\b|\bstab\b/.test(s)) return 'Chord';
+  if (/\barps?\b|\barp(eggio)?\b/.test(s)) return 'Arp';
   if (/\bpluck\b/.test(s)) return 'Pluck';
-  if (/\bsynth\b/.test(s)) return 'Synth';
+  if (/\bsynths?\b/.test(s)) return 'Synth';
 
   if (/\bpiano\b|\bkeys\b/.test(s)) return 'Piano';
   if (/\borgan\b|\bhammond\b/.test(s)) return 'Organ';
@@ -93,6 +93,13 @@ interface StemRow {
   status: UploadStatus;
   progress: number;
   error?: string;
+  targetStemId?: string; // when set, creates a new version on an existing stem instead of a new stem
+}
+
+export interface ExistingStem {
+  id: string;
+  stemCategory: string;
+  name: string;
 }
 
 // ── Component ────────────────────────────────────────────────────────────────
@@ -101,10 +108,11 @@ interface BulkUploadModalProps {
   trackId: string;
   existingStemCount: number;
   existingCategories?: StemCategory[];
+  existingStems?: ExistingStem[];
   onClose: () => void;
 }
 
-export function BulkUploadModal({ trackId, existingStemCount, existingCategories = [], onClose }: BulkUploadModalProps) {
+export function BulkUploadModal({ trackId, existingStemCount, existingCategories = [], existingStems, onClose }: BulkUploadModalProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [rows, setRows] = useState<StemRow[]>([]);
   const [uploading, setUploading] = useState(false);
@@ -116,13 +124,18 @@ export function BulkUploadModal({ trackId, existingStemCount, existingCategories
       const existing = new Set(prev.map((r) => r.file.name));
       const next = accepted
         .filter((f) => !existing.has(f.name))
-        .map((f) => ({
-          file: f,
-          category: classifyStem(f.name),
-          fileType: fileTypeFromName(f.name),
-          status: 'idle' as UploadStatus,
-          progress: 0,
-        }));
+        .map((f) => {
+          const category = classifyStem(f.name);
+          const matched = existingStems?.find((s) => s.stemCategory === category);
+          return {
+            file: f,
+            category,
+            fileType: fileTypeFromName(f.name),
+            status: 'idle' as UploadStatus,
+            progress: 0,
+            targetStemId: matched?.id,
+          };
+        });
       return [...prev, ...next];
     });
   };
@@ -150,19 +163,24 @@ export function BulkUploadModal({ trackId, existingStemCount, existingCategories
         const entityId = identityId ?? 'unknown';
 
         try {
-          // 1. Create Stem record
-          const stemResult = await client.models.Stem.create({
-            name: row.category,
-            type: row.fileType,
-            stemCategory: row.category,
-            trackId,
-            sortOrder: existingStemCount + idx,
-            isActive: true,
-          });
-          if (stemResult.errors || !stemResult.data) {
-            throw new Error(stemResult.errors?.[0]?.message ?? 'Failed to create stem');
+          // 1. Resolve stem — reuse existing if matched, otherwise create new
+          let stemId: string;
+          if (row.targetStemId) {
+            stemId = row.targetStemId;
+          } else {
+            const stemResult = await client.models.Stem.create({
+              name: row.category,
+              type: row.fileType,
+              stemCategory: row.category,
+              trackId,
+              sortOrder: existingStemCount + idx,
+              isActive: true,
+            });
+            if (stemResult.errors || !stemResult.data) {
+              throw new Error(stemResult.errors?.[0]?.message ?? 'Failed to create stem');
+            }
+            stemId = stemResult.data.id;
           }
-          const stemId = stemResult.data.id;
 
           // 2. Upload file
           const ext = row.file.name.split('.').pop() ?? 'wav';
@@ -291,7 +309,12 @@ export function BulkUploadModal({ trackId, existingStemCount, existingCategories
                     </td>
                     <td style={{ padding: '6px 6px', color: 'var(--text-muted)', maxWidth: 0 }}>
                       <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{row.file.name}</div>
-                      <div style={{ fontSize: '10px', marginTop: '1px' }}>{(row.file.size / 1024 / 1024).toFixed(1)} MB</div>
+                      <div style={{ fontSize: '10px', marginTop: '1px', display: 'flex', gap: 6 }}>
+                        <span>{(row.file.size / 1024 / 1024).toFixed(1)} MB</span>
+                        {row.targetStemId && (
+                          <span style={{ color: 'var(--accent-green)' }}>→ new version on existing stem</span>
+                        )}
+                      </div>
                     </td>
                     <td style={{ padding: '6px 6px' }}>
                       {row.status === 'idle' && <span style={{ color: 'var(--text-muted)' }}>—</span>}
