@@ -194,7 +194,7 @@ export function TrackDetail() {
         {(['current', 'edits', 'edit-requests'] as Tab[]).map((t) => {
           const labels: Record<Tab, string> = {
             current: 'Current',
-            edits: `Edits${edits.length > 0 ? ` (${edits.length})` : ''}`,
+            edits: `Edits${edits.filter((e) => !e.isArchived).length > 0 ? ` (${edits.filter((e) => !e.isArchived).length})` : ''}`,
             'edit-requests': `Edit Requests${openERs.length > 0 ? ` (${openERs.length} open)` : editRequests.length > 0 ? ` (${editRequests.length})` : ''}`,
           };
           return (
@@ -285,20 +285,34 @@ export function TrackDetail() {
       {/* ── Edits tab ────────────────────────────────────────────────────────── */}
       {tab === 'edits' && (
         <>
-          {edits.length === 0 ? (
+          {edits.filter((e) => !e.isArchived).length === 0 && edits.filter((e) => e.isArchived).length === 0 ? (
             <div className="empty-state">
               <div className="empty-state-icon">⎇</div>
               <p>No edits yet. Create an edit to propose changes to this track.</p>
               <button className="btn-primary" onClick={() => setShowCreateEdit(true)}>New edit</button>
             </div>
           ) : (
-            edits.map((edit) => (
-              <EditRow
-                key={edit.id}
-                edit={edit}
-                onClick={() => navigate(`/project/${projectId}/track/${trackId}/edit/${edit.id}`)}
-              />
-            ))
+            <>
+              {edits.filter((e) => !e.isArchived).map((edit) => (
+                <EditRow
+                  key={edit.id}
+                  edit={edit}
+                  onClick={() => navigate(`/project/${projectId}/track/${trackId}/edit/${edit.id}`)}
+                />
+              ))}
+              {edits.filter((e) => e.isArchived).length > 0 && (
+                <>
+                  <p className="section-title" style={{ marginTop: 24, opacity: 0.5 }}>Archived</p>
+                  {edits.filter((e) => e.isArchived).map((edit) => (
+                    <EditRow
+                      key={edit.id}
+                      edit={edit}
+                      onClick={() => navigate(`/project/${projectId}/track/${trackId}/edit/${edit.id}`)}
+                    />
+                  ))}
+                </>
+              )}
+            </>
           )}
         </>
       )}
@@ -387,12 +401,15 @@ export function TrackDetail() {
 
 function EditRow({ edit, onClick }: { edit: Edit; onClick: () => void }) {
   return (
-    <div className="version-row" onClick={onClick} style={{ cursor: 'pointer' }}>
+    <div className="version-row" onClick={onClick} style={{ cursor: 'pointer', opacity: edit.isArchived ? 0.45 : 1 }}>
       <span className="version-label">{edit.name}</span>
       {edit.description && <span className="version-notes">{edit.description}</span>}
       <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
         {Object.keys(edit.snapshot ? JSON.parse(edit.snapshot as string) : {}).length} stems
       </span>
+      {edit.isArchived && (
+        <span style={{ fontSize: '10px', fontWeight: 600, color: 'var(--text-muted)', border: '1px solid var(--border)', padding: '1px 6px', borderRadius: '4px' }}>archived</span>
+      )}
       <span className="version-meta">{new Date(edit.createdAt!).toLocaleDateString()}</span>
     </div>
   );

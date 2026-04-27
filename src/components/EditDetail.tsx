@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { generateClient } from 'aws-amplify/data';
 import { uploadData, getUrl } from 'aws-amplify/storage';
@@ -44,6 +44,7 @@ export function EditDetail() {
 
   // Add new stem state
   const [showAddStem, setShowAddStem] = useState(false);
+  const [showBulkUpload, setShowBulkUpload] = useState(false);
 
   useEffect(() => {
     if (!editId || !trackId) return;
@@ -182,6 +183,9 @@ export function EditDetail() {
           <button className="btn-secondary" onClick={() => setShowAddStem(true)}>
             + Add stem
           </button>
+          <button className="btn-secondary" onClick={() => setShowBulkUpload(true)}>
+            ↑ Bulk upload
+          </button>
           <button
             className="btn-primary"
             onClick={() => setShowOpenER(true)}
@@ -212,7 +216,7 @@ export function EditDetail() {
             )}
           </div>
         </div>
-        {mixStems && <MixPlayer stems={mixStems} />}
+        {mixStems && <MixPlayer stems={mixStems} autoPlay />}
       </div>
 
       {/* Stem list */}
@@ -365,6 +369,20 @@ export function EditDetail() {
             const next = { ...editSnapshot, [stemId]: versionId };
             await updateSnapshot(next);
             setShowAddStem(false);
+          }}
+        />
+      )}
+
+      {showBulkUpload && (
+        <EditBulkUploadModal
+          trackId={trackId!}
+          editId={editId!}
+          stems={stems}
+          editSnapshot={editSnapshot}
+          existingStemCount={stems.length}
+          onClose={() => setShowBulkUpload(false)}
+          onComplete={async (snap) => {
+            await updateSnapshot(snap);
           }}
         />
       )}
@@ -553,6 +571,241 @@ function OpenERModal({ trackId, editId, editSnapshot, onClose, onCreated }: Open
   );
 }
 
+// ── Edit Bulk Upload Modal ────────────────────────────────────────────────────
+
+interface EditBulkRow {
+  file: File;
+  fileType: 'AUDIO' | 'MIDI';
+  detectedCategory: StemCategory;
+  targetStemId: string | null;
+  newCategory: StemCategory;
+  status: 'idle' | 'uploading' | 'done' | 'error';
+  progress: number;
+  error?: string;
+}
+
+interface EditBulkUploadModalProps {
+  trackId: string;
+  editId: string;
+  stems: Stem[];
+  editSnapshot: Snapshot;
+  existingStemCount: number;
+  onClose: () => void;
+  onComplete: (updatedSnapshot: Snapshot) => void;
+}
+
+function EditBulkUploadModal({ trackId, editId, stems, editSnapshot, existingStemCount, onClose, onComplete }: EditBulkUploadModalProps) {
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [rows, setRows] = useState<EditBulkRow[]>([]);
+  const [uploading, setUploading] = useState(false);
+
+  const addFiles = (files: FileList | File[]) => {
+    const accepted = Array.from(files).filter((f) => /\.(wav|aiff?|flac|mp3|ogg|mid|midi)$/i.test(f.name));
+    setRows((prev) => {
+      const existing = new Set(prev.map((r) => r.file.name));
+      const next = accepted
+        .filter((f) => !existing.has(f.name))
+        .map((f) => {
+          const category = classifyStem(f.name);
+          const matchedStem = stems.find((s) => s.stemCategory === category);
+          return {
+            file: f,
+            fileType: /\.midi?$/i.test(f.name) ? 'MIDI' as const : 'AUDIO' as const,
+            detectedCategory: category,
+            targetStemId: matchedStem?.id ?? null,
+            newCategory: category,
+            status: 'idle' as const,
+            progress: 0,
+          };
+        });
+      return [...prev, ...next];
+    });
+  };
+
+  const updateRow = <K extends keyof EditBulkRow>(idx: number, key: K, val: EditBulkRow[K]) =>
+    setRows((prev) => prev.map((r, i) => (i === idx ? { ...r, [key]: val } : r)));
+
+  const removeRow = (idx: number) => setRows((prev) => prev.filter((_, i) => i !== idx));
+
+  const handleUploadAll = async () => {
+    if (!rows.filter((r) => r.status === 'idle').length) return;
+    setUploading(true);
+    const snapshotUpdates: Record<string, string> = {};
+    let newStemOffset = existingStemCount;
+
+    await Promise.all(
+      rows.map(async (row, idx) => {
+        if (row.status !== 'idle') return;
+        try {
+          const { identityId } = await fetchAuthSession();
+          const entityId = identityId ?? 'unknown';
+
+          let stemId: string;
+          if (row.targetStemId) {
+            stemId = row.targetStemId;
+          } else {
+            const stemRes = await client.models.Stem.create({
+              trackId,
+              name: row.newCategory,
+              type: row.fileType,
+              stemCategory: row.newCategory,
+              sortOrder: newStemOffset++,
+              isActive: true,
+            });
+            if (stemRes.errors || !stemRes.data) throw new Error(stemRes.errors?.[0]?.message ?? 'Stem create failed');
+            stemId = stemRes.data.id;
+          }
+
+          const existingVersions = await client.models.StemVersion.list({ filter: { stemId: { eq: stemId } } });
+          const versionLabel = `v${(existingVersions.data ?? []).length + 1}`;
+
+          const ext = row.file.name.split('.').pop() ?? 'wav';
+          const s3Key = `stems/${entityId}/stems/${stemId}/${Date.now()}.${ext}`;
+
+          updateRow(idx, 'status', 'uploading');
+          await uploadData({
+            path: s3Key,
+            data: row.file,
+            options: {
+              contentType: row.file.type || 'application/octet-stream',
+              onProgress: ({ transferredBytes, totalBytes }) => {
+                if (totalBytes) updateRow(idx, 'progress', Math.round((transferredBytes / totalBytes) * 100));
+              },
+            },
+          }).result;
+
+          const vRes = await client.models.StemVersion.create({
+            stemId,
+            s3Key,
+            versionLabel,
+            fileSizeBytes: row.file.size,
+            pendingEditId: editId,
+          });
+          if (vRes.errors || !vRes.data) throw new Error(vRes.errors?.[0]?.message ?? 'Version create failed');
+
+          snapshotUpdates[stemId] = vRes.data.id;
+          updateRow(idx, 'status', 'done');
+        } catch (e) {
+          updateRow(idx, 'status', 'error');
+          updateRow(idx, 'error', e instanceof Error ? e.message : 'Upload failed');
+        }
+      })
+    );
+
+    setUploading(false);
+    if (Object.keys(snapshotUpdates).length > 0) {
+      onComplete({ ...editSnapshot, ...snapshotUpdates });
+    }
+  };
+
+  const doneCount = rows.filter((r) => r.status === 'done').length;
+  const errorCount = rows.filter((r) => r.status === 'error').length;
+  const allDone = rows.length > 0 && rows.every((r) => r.status === 'done' || r.status === 'error');
+  const idleCount = rows.filter((r) => r.status === 'idle').length;
+
+  return (
+    <div className="modal-overlay" onClick={!uploading ? onClose : undefined}>
+      <div className="modal" style={{ width: '720px', maxHeight: '85vh', display: 'flex', flexDirection: 'column' }} onClick={(e) => e.stopPropagation()}>
+        <h2 className="modal-title" style={{ margin: '0 0 16px' }}>Bulk upload to edit</h2>
+
+        <div
+          onDrop={(e) => { e.preventDefault(); if (e.dataTransfer.files) addFiles(e.dataTransfer.files); }}
+          onDragOver={(e) => e.preventDefault()}
+          onClick={() => fileInputRef.current?.click()}
+          style={{ border: '2px dashed var(--border)', borderRadius: 10, padding: '24px', textAlign: 'center', cursor: 'pointer', color: 'var(--text-muted)', fontSize: '13px', flexShrink: 0 }}
+        >
+          Drop audio files or <span style={{ color: 'var(--accent)' }}>browse</span>
+          <div style={{ marginTop: 4, fontSize: '11px' }}>WAV · AIFF · FLAC · MP3 · MIDI</div>
+          <input ref={fileInputRef} type="file" multiple accept=".wav,.aiff,.aif,.flac,.mp3,.ogg,.mid,.midi" style={{ display: 'none' }}
+            onChange={(e) => { if (e.target.files) addFiles(e.target.files); e.target.value = ''; }} />
+        </div>
+
+        {rows.length > 0 && (
+          <div style={{ flex: 1, overflowY: 'auto', marginTop: 16 }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
+              <thead>
+                <tr style={{ color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                  <th style={{ textAlign: 'left', padding: '4px 6px', width: '30%' }}>File</th>
+                  <th style={{ textAlign: 'left', padding: '4px 6px', width: '40%' }}>Target stem</th>
+                  <th style={{ textAlign: 'left', padding: '4px 6px', width: '24%' }}>Status</th>
+                  <th style={{ padding: '4px 6px', width: '6%' }} />
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((row, idx) => (
+                  <tr key={row.file.name} style={{ borderTop: '1px solid var(--border-subtle)', background: row.status === 'error' ? 'rgba(239,68,68,0.05)' : row.status === 'done' ? 'rgba(16,185,129,0.05)' : undefined }}>
+                    <td style={{ padding: '8px 6px' }}>
+                      <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--text-secondary)' }}>{row.file.name}</div>
+                      <div style={{ fontSize: '10px', color: 'var(--text-muted)', marginTop: 1 }}>{(row.file.size / 1024 / 1024).toFixed(1)} MB</div>
+                    </td>
+                    <td style={{ padding: '8px 6px' }}>
+                      <select
+                        value={row.targetStemId ?? ''}
+                        onChange={(e) => updateRow(idx, 'targetStemId', e.target.value || null)}
+                        disabled={row.status !== 'idle'}
+                        style={{ fontSize: '12px', padding: '3px 6px', width: '100%' }}
+                      >
+                        <option value="">— New stem —</option>
+                        {stems.map((s) => (
+                          <option key={s.id} value={s.id}>{s.name}{s.stemCategory ? ` (${s.stemCategory})` : ''}</option>
+                        ))}
+                      </select>
+                      {!row.targetStemId && (
+                        <select
+                          value={row.newCategory}
+                          onChange={(e) => updateRow(idx, 'newCategory', e.target.value as StemCategory)}
+                          disabled={row.status !== 'idle'}
+                          style={{ fontSize: '12px', padding: '3px 6px', width: '100%', marginTop: 4 }}
+                        >
+                          {STEM_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+                        </select>
+                      )}
+                    </td>
+                    <td style={{ padding: '8px 6px' }}>
+                      {row.status === 'idle' && <span style={{ color: 'var(--text-muted)' }}>—</span>}
+                      {row.status === 'uploading' && (
+                        <div>
+                          <div style={{ height: 3, background: 'var(--border)', borderRadius: 2, overflow: 'hidden' }}>
+                            <div style={{ width: `${row.progress}%`, height: '100%', background: 'var(--accent)', transition: 'width 0.2s' }} />
+                          </div>
+                          <div style={{ fontSize: '10px', color: 'var(--text-muted)', marginTop: 2 }}>{row.progress}%</div>
+                        </div>
+                      )}
+                      {row.status === 'done' && <span style={{ color: 'var(--accent-green)' }}>✓ Done</span>}
+                      {row.status === 'error' && <span style={{ color: 'var(--accent-red)', fontSize: '11px' }} title={row.error}>✗ Error</span>}
+                    </td>
+                    <td style={{ padding: '8px 4px', textAlign: 'center' }}>
+                      {row.status === 'idle' && (
+                        <button className="btn-ghost btn-sm" onClick={() => removeRow(idx)} style={{ padding: '1px 5px', color: 'var(--text-muted)' }}>✕</button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 16, flexShrink: 0 }}>
+          <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+            {rows.length > 0 && !uploading && !allDone && `${idleCount} file${idleCount !== 1 ? 's' : ''} ready — map to existing stems or create new`}
+            {uploading && `${doneCount} / ${rows.length} uploaded…`}
+            {allDone && <span style={{ color: errorCount ? 'var(--accent)' : 'var(--accent-green)' }}>{doneCount} uploaded{errorCount ? `, ${errorCount} failed` : ''}</span>}
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button className="btn-secondary" onClick={onClose} disabled={uploading}>{allDone ? 'Close' : 'Cancel'}</button>
+            {!allDone && (
+              <button className="btn-primary" onClick={handleUploadAll} disabled={uploading || idleCount === 0}>
+                {uploading ? `Uploading… ${doneCount}/${rows.length}` : `Upload ${idleCount} stem${idleCount !== 1 ? 's' : ''}`}
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Add New Stem to Edit Modal ────────────────────────────────────────────────
 
 interface AddStemToEditModalProps {
@@ -564,8 +817,7 @@ interface AddStemToEditModalProps {
 }
 
 function AddStemToEditModal({ trackId, editId, existingStemCount, onClose, onCreated }: AddStemToEditModalProps) {
-  const [name, setName] = useState('');
-  const [category, setCategory] = useState<StemCategory | ''>('');
+  const [category, setCategory] = useState<StemCategory>(STEM_CATEGORIES[0]);
   const [file, setFile] = useState<File | null>(null);
   const [notes, setNotes] = useState('');
   const [uploading, setUploading] = useState(false);
@@ -575,22 +827,18 @@ function AddStemToEditModal({ trackId, editId, existingStemCount, onClose, onCre
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0] ?? null;
     setFile(f);
-    if (f && !name.trim()) {
-      const stem = f.name.replace(/\.[^/.]+$/, '');
-      setName(stem);
-      if (!category) setCategory(classifyStem(f.name));
-    }
+    if (f) setCategory(classifyStem(f.name));
   };
 
   const handleCreate = async () => {
-    if (!name.trim() || !file) return;
+    if (!file) return;
     setUploading(true);
     setError(null);
     try {
       // Create the Stem record
       const stemRes = await client.models.Stem.create({
         trackId,
-        name: name.trim(),
+        name: category,
         type: 'AUDIO',
         stemCategory: category || undefined,
         sortOrder: existingStemCount,
@@ -658,19 +906,8 @@ function AddStemToEditModal({ trackId, editId, existingStemCount, onClose, onCre
         </div>
 
         <div className="form-group">
-          <label className="form-label">Stem name *</label>
-          <input
-            type="text"
-            placeholder="e.g. Kick, Lead Synth, Vocal"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-          />
-        </div>
-
-        <div className="form-group">
-          <label className="form-label">Category</label>
-          <select value={category} onChange={(e) => setCategory(e.target.value as StemCategory | '')}>
-            <option value="">— None —</option>
+          <label className="form-label">Type *</label>
+          <select value={category} onChange={(e) => setCategory(e.target.value as StemCategory)}>
             {STEM_CATEGORIES.map((c) => (
               <option key={c} value={c}>{c}</option>
             ))}
@@ -699,7 +936,7 @@ function AddStemToEditModal({ trackId, editId, existingStemCount, onClose, onCre
 
         <div className="modal-actions">
           <button className="btn-secondary" onClick={onClose} disabled={uploading}>Cancel</button>
-          <button className="btn-primary" onClick={handleCreate} disabled={uploading || !name.trim() || !file}>
+          <button className="btn-primary" onClick={handleCreate} disabled={uploading || !file}>
             {uploading ? `Uploading ${progress}%…` : 'Create stem'}
           </button>
         </div>

@@ -9,9 +9,10 @@ export interface StemTrack {
 
 interface MixPlayerProps {
   stems: StemTrack[];
+  autoPlay?: boolean;
 }
 
-export function MixPlayer({ stems }: MixPlayerProps) {
+export function MixPlayer({ stems, autoPlay }: MixPlayerProps) {
   const [loaded, setLoaded] = useState(0);
   const [ready, setReady] = useState(false);
   const [playing, setPlaying] = useState(false);
@@ -123,6 +124,12 @@ export function MixPlayer({ stems }: MixPlayerProps) {
     };
     rafRef.current = requestAnimationFrame(tick);
   }, [stems, duration, stopSources]);
+
+  useEffect(() => {
+    if (ready && autoPlay) {
+      ctxRef.current?.resume().then(() => startPlayback(0));
+    }
+  }, [ready, autoPlay, startPlayback]);
 
   const toggle = async () => {
     if (playing) {

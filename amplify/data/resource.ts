@@ -90,6 +90,7 @@ const schema = a.schema({
       description: a.string(),
       createdBy: a.string().required(),
       snapshot: a.json(),
+      isArchived: a.boolean(),
       editRequests: a.hasMany('EditRequest', 'fromEditId'),
     })
     .authorization((allow) => [allow.authenticated()]),

@@ -94,12 +94,13 @@ export function EditRequestDetail() {
           await client.models.Stem.update({ id: stemId, activeVersionId: versionId });
           const v = await client.models.StemVersion.get({ id: versionId });
           if (v.data?.pendingEditId) {
-            await client.models.StemVersion.update({ id: versionId, pendingEditId: undefined });
+            await client.models.StemVersion.update({ id: versionId, pendingEditId: null });
           }
         })
       );
 
       await client.models.EditRequest.update({ id: er.id, status: 'MERGED' });
+      await client.models.Edit.update({ id: er.fromEditId, isArchived: true });
       navigate(`/project/${projectId}/track/${trackId}`);
     } finally {
       setMerging(false);
