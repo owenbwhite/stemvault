@@ -222,15 +222,28 @@ export function EditDetail() {
           const versionLabel = versionRecord?.versionLabel ?? (versionId ? versionId.slice(0, 8) : null);
 
           return (
-            <div key={stem.id} className="track-row" style={{ cursor: 'default', opacity: included ? 1 : 0.45 }}>
-              <input
-                type="checkbox"
-                checked={included}
-                onChange={(e) => handleToggleStem(stem.id, e.target.checked)}
-                style={{ accentColor: 'var(--accent)', flexShrink: 0 }}
-                title={included ? 'Remove from edit mix' : 'Include in edit mix'}
-              />
-              <div className="track-name">{stem.name}</div>
+            <div key={stem.id} style={{
+              display: 'flex', alignItems: 'center', gap: 10,
+              padding: '12px 16px', background: 'var(--bg-card)',
+              border: '1px solid var(--border)', borderRadius: 10, marginBottom: 8,
+              opacity: included ? 1 : 0.45,
+            }}>
+              <button
+                onClick={() => handleToggleStem(stem.id, !included)}
+                title={included ? 'Remove from mix' : 'Include in mix'}
+                style={{
+                  width: 20, height: 20, borderRadius: 4, flexShrink: 0, padding: 0,
+                  background: included ? 'var(--accent)' : 'transparent',
+                  border: `1.5px solid ${included ? 'var(--accent)' : 'var(--border)'}`,
+                  cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  transition: 'background 0.15s, border-color 0.15s',
+                }}
+              >
+                {included && <span style={{ color: '#fff', fontSize: 11, lineHeight: 1, fontWeight: 700 }}>✓</span>}
+              </button>
+              <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: 500, fontSize: '14px' }}>
+                {stem.name}
+              </span>
               {stem.stemCategory && (
                 <span style={{ fontSize: '10px', color: 'var(--text-muted)', background: 'var(--bg-hover)', padding: '1px 6px', borderRadius: '999px', border: '1px solid var(--border)', flexShrink: 0 }}>
                   {stem.stemCategory}
@@ -242,21 +255,13 @@ export function EditDetail() {
                   {isDraft && <span style={{ color: 'var(--accent)', marginLeft: 4 }}>· draft</span>}
                 </span>
               )}
-              <div className="track-controls">
+              <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
                 {included && (
-                  <button
-                    className="btn-ghost btn-sm"
-                    onClick={() => openPicker(stem.id)}
-                    style={{ fontSize: '11px' }}
-                  >
+                  <button className="btn-ghost btn-sm" onClick={() => openPicker(stem.id)} style={{ fontSize: '11px' }}>
                     Change version
                   </button>
                 )}
-                <button
-                  className="btn-secondary btn-sm"
-                  onClick={() => setUploadStemId(stem.id)}
-                  style={{ fontSize: '11px' }}
-                >
+                <button className="btn-secondary btn-sm" onClick={() => setUploadStemId(stem.id)} style={{ fontSize: '11px' }}>
                   ↑ Upload
                 </button>
               </div>
