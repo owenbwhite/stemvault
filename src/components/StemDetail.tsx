@@ -351,7 +351,8 @@ function UploadModal({ stemId, stemType, onClose }: UploadModalProps) {
       const ext = file.name.split('.').pop() ?? 'wav';
       const { identityId } = await fetchAuthSession();
       const entityId = identityId ?? 'unknown';
-      const s3Key = `stems/${entityId}/stems/${stemId}/${Date.now()}.${ext}`;
+      const versionId = crypto.randomUUID();
+      const s3Key = `stems/${entityId}/stems/${stemId}/${versionId}.${ext}`;
 
       await uploadData({
         path: s3Key,
@@ -365,6 +366,7 @@ function UploadModal({ stemId, stemType, onClose }: UploadModalProps) {
       }).result;
 
       const result = await client.models.StemVersion.create({
+        id: versionId,
         stemId,
         s3Key,
         versionLabel: label.trim() || undefined,

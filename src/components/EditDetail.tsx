@@ -365,7 +365,8 @@ function EditUploadModal({ stemId, editId, stemName, stemType, onClose, onUpload
       const ext = file.name.split('.').pop() ?? 'wav';
       const { identityId } = await fetchAuthSession();
       const entityId = identityId ?? 'unknown';
-      const s3Key = `stems/${entityId}/stems/${stemId}/${Date.now()}.${ext}`;
+      const versionId = crypto.randomUUID();
+      const s3Key = `stems/${entityId}/stems/${stemId}/${versionId}.${ext}`;
 
       await uploadData({
         path: s3Key,
@@ -379,6 +380,7 @@ function EditUploadModal({ stemId, editId, stemName, stemType, onClose, onUpload
       }).result;
 
       const res = await client.models.StemVersion.create({
+        id: versionId,
         stemId,
         s3Key,
         versionLabel,
@@ -598,7 +600,8 @@ function EditBulkUploadModal({ trackId, editId, stems, editSnapshot, existingSte
           const versionLabel = `v${(existingVersions.data ?? []).length + 1}`;
 
           const ext = row.file.name.split('.').pop() ?? 'wav';
-          const s3Key = `stems/${entityId}/stems/${stemId}/${Date.now()}.${ext}`;
+          const versionId = crypto.randomUUID();
+          const s3Key = `stems/${entityId}/stems/${stemId}/${versionId}.${ext}`;
 
           updateRow(idx, 'status', 'uploading');
           await uploadData({
@@ -613,6 +616,7 @@ function EditBulkUploadModal({ trackId, editId, stems, editSnapshot, existingSte
           }).result;
 
           const vRes = await client.models.StemVersion.create({
+            id: versionId,
             stemId,
             s3Key,
             versionLabel,
@@ -796,7 +800,8 @@ function AddStemToEditModal({ trackId, editId, existingStemCount, existingCatego
       const ext = file.name.split('.').pop() ?? 'wav';
       const { identityId } = await fetchAuthSession();
       const entityId = identityId ?? 'unknown';
-      const s3Key = `stems/${entityId}/stems/${stemId}/${Date.now()}.${ext}`;
+      const versionId = crypto.randomUUID();
+      const s3Key = `stems/${entityId}/stems/${stemId}/${versionId}.${ext}`;
 
       await uploadData({
         path: s3Key,
@@ -811,6 +816,7 @@ function AddStemToEditModal({ trackId, editId, existingStemCount, existingCatego
 
       // Create StemVersion as a draft
       const vRes = await client.models.StemVersion.create({
+        id: versionId,
         stemId,
         s3Key,
         versionLabel: 'v1',

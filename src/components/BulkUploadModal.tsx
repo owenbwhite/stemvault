@@ -184,7 +184,8 @@ export function BulkUploadModal({ trackId, existingStemCount, existingCategories
 
           // 2. Upload file
           const ext = row.file.name.split('.').pop() ?? 'wav';
-          const s3Key = `stems/${entityId}/stems/${stemId}/${Date.now()}.${ext}`;
+          const versionId = crypto.randomUUID();
+          const s3Key = `stems/${entityId}/stems/${stemId}/${versionId}.${ext}`;
 
           updateRow(idx, 'status', 'uploading');
 
@@ -201,6 +202,7 @@ export function BulkUploadModal({ trackId, existingStemCount, existingCategories
 
           // 3. Create StemVersion record
           const versionResult = await client.models.StemVersion.create({
+            id: versionId,
             stemId,
             s3Key,
             versionLabel: 'v1',

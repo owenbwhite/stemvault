@@ -16,7 +16,7 @@ interface MixPlayerProps {
 }
 
 export function MixPlayer({ stems, autoPlay, renderStemExtra }: MixPlayerProps) {
-  const [loaded, setLoaded] = useState(0);
+  const [readyCount, setReadyCount] = useState(0);
   const [ready, setReady] = useState(false);
   const [playing, setPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -26,20 +26,20 @@ export function MixPlayer({ stems, autoPlay, renderStemExtra }: MixPlayerProps) 
   const [error, setError] = useState<string | null>(null);
 
   const ctxRef = useRef<AudioContext | null>(null);
-  const buffersRef = useRef<Record<string, AudioBuffer>>({});
+  const audioElsRef = useRef<Record<string, HTMLAudioElement>>({});
   const gainNodesRef = useRef<Record<string, GainNode>>({});
-  const sourcesRef = useRef<AudioBufferSourceNode[]>([]);
-  const startedAtRef = useRef(0);
-  const offsetRef = useRef(0);
-  const rafRef = useRef(0);
-  // Keep latest gains/muted in refs so play() doesn't go stale
   const gainsRef = useRef<Record<string, number>>({});
   const mutedRef = useRef<Record<string, boolean>>({});
+  const rafRef = useRef(0);
+  const durationRef = useRef(0);
+  const readyCountRef = useRef(0);
 
   useEffect(() => { gainsRef.current = gains; }, [gains]);
   useEffect(() => { mutedRef.current = muted; }, [muted]);
 
   useEffect(() => {
+    if (stems.length === 0) return;
+
     const ctx = new AudioContext();
     ctxRef.current = ctx;
 
@@ -48,116 +48,120 @@ export function MixPlayer({ stems, autoPlay, renderStemExtra }: MixPlayerProps) 
     setGains(initial);
     gainsRef.current = initial;
 
-    let loadedCount = 0;
-    Promise.all(
-      stems.map(async (s) => {
-        const res = await fetch(s.url);
-        const raw = await res.arrayBuffer();
-        const buf = await ctx.decodeAudioData(raw);
-        loadedCount++;
-        setLoaded(loadedCount);
-        return { id: s.id, buf };
-      })
-    ).then((results) => {
-      let maxDur = 0;
-      for (const { id, buf } of results) {
-        buffersRef.current[id] = buf;
-        maxDur = Math.max(maxDur, buf.duration);
-      }
-      setDuration(maxDur);
-      setReady(true);
-    }).catch((e) => {
-      setError(e instanceof Error ? e.message : 'Failed to load stems');
-    });
+    readyCountRef.current = 0;
+    let maxDuration = 0;
+
+    for (const stem of stems) {
+      const audio = new Audio();
+      audio.crossOrigin = 'anonymous';
+      audio.preload = 'auto';
+      audioElsRef.current[stem.id] = audio;
+
+      const gainNode = ctx.createGain();
+      gainNode.gain.value = 1;
+      gainNode.connect(ctx.destination);
+      gainNodesRef.current[stem.id] = gainNode;
+
+      const source = ctx.createMediaElementSource(audio);
+      source.connect(gainNode);
+
+      const markReady = () => {
+        readyCountRef.current += 1;
+        setReadyCount(readyCountRef.current);
+        if (readyCountRef.current === stems.length) setReady(true);
+      };
+
+      audio.addEventListener('loadedmetadata', () => {
+        if (isFinite(audio.duration)) {
+          maxDuration = Math.max(maxDuration, audio.duration);
+          durationRef.current = maxDuration;
+          setDuration(maxDuration);
+        }
+      });
+
+      audio.addEventListener('canplaythrough', markReady, { once: true });
+      if (audio.readyState >= HTMLMediaElement.HAVE_ENOUGH_DATA) markReady();
+
+      audio.addEventListener('error', () => setError(`Failed to load: ${stem.name}`));
+
+      audio.src = stem.url;
+      audio.load();
+    }
 
     return () => {
       cancelAnimationFrame(rafRef.current);
+      for (const audio of Object.values(audioElsRef.current)) {
+        audio.pause();
+        audio.src = '';
+      }
+      audioElsRef.current = {};
+      gainNodesRef.current = {};
       ctx.close();
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const stopSources = useCallback(() => {
-    for (const src of sourcesRef.current) {
-      try { src.stop(); } catch { /* already stopped */ }
-    }
-    sourcesRef.current = [];
-    cancelAnimationFrame(rafRef.current);
-  }, []);
+  const stopRaf = useCallback(() => cancelAnimationFrame(rafRef.current), []);
 
-  const startPlayback = useCallback((fromOffset: number) => {
-    const ctx = ctxRef.current;
-    if (!ctx) return;
-    stopSources();
-
-    const newSources: AudioBufferSourceNode[] = [];
-    for (const stem of stems) {
-      const buffer = buffersRef.current[stem.id];
-      if (!buffer) continue;
-
-      const gainNode = ctx.createGain();
-      const isMuted = mutedRef.current[stem.id] ?? false;
-      gainNode.gain.value = isMuted ? 0 : (gainsRef.current[stem.id] ?? 1);
-      gainNode.connect(ctx.destination);
-      gainNodesRef.current[stem.id] = gainNode;
-
-      const source = ctx.createBufferSource();
-      source.buffer = buffer;
-      source.connect(gainNode);
-      source.start(0, fromOffset);
-      newSources.push(source);
-    }
-
-    sourcesRef.current = newSources;
-    startedAtRef.current = ctx.currentTime;
-    offsetRef.current = fromOffset;
-    setPlaying(true);
-
+  const startRaf = useCallback(() => {
     const tick = () => {
-      const elapsed = (ctxRef.current?.currentTime ?? 0) - startedAtRef.current + offsetRef.current;
-      if (elapsed >= duration) {
-        stopSources();
+      const master = Object.values(audioElsRef.current)[0];
+      if (!master) return;
+      const t = master.currentTime;
+      setCurrentTime(t);
+      if (master.ended || t >= durationRef.current - 0.05) {
+        for (const a of Object.values(audioElsRef.current)) {
+          a.pause();
+          a.currentTime = 0;
+        }
         setPlaying(false);
         setCurrentTime(0);
-        offsetRef.current = 0;
-      } else {
-        setCurrentTime(elapsed);
-        rafRef.current = requestAnimationFrame(tick);
+        return;
       }
+      rafRef.current = requestAnimationFrame(tick);
     };
     rafRef.current = requestAnimationFrame(tick);
-  }, [stems, duration, stopSources]);
+  }, []);
 
   useEffect(() => {
     if (ready && autoPlay) {
-      ctxRef.current?.resume().then(() => startPlayback(0));
+      ctxRef.current?.resume().then(() => {
+        for (const audio of Object.values(audioElsRef.current)) {
+          audio.play().catch(() => {});
+        }
+        setPlaying(true);
+        startRaf();
+      });
     }
-  }, [ready, autoPlay, startPlayback]);
+  }, [ready, autoPlay, startRaf]);
 
   const toggle = async () => {
     if (playing) {
-      offsetRef.current += (ctxRef.current?.currentTime ?? 0) - startedAtRef.current;
-      stopSources();
+      for (const audio of Object.values(audioElsRef.current)) audio.pause();
+      stopRaf();
       setPlaying(false);
     } else {
       await ctxRef.current?.resume();
-      startPlayback(offsetRef.current);
+      for (const audio of Object.values(audioElsRef.current)) audio.play().catch(() => {});
+      setPlaying(true);
+      startRaf();
     }
   };
 
   const seek = (e: React.MouseEvent<HTMLDivElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
-    const newOffset = ((e.clientX - rect.left) / rect.width) * duration;
-    offsetRef.current = newOffset;
-    setCurrentTime(newOffset);
-    if (playing) startPlayback(newOffset);
+    const newTime = ((e.clientX - rect.left) / rect.width) * durationRef.current;
+    setCurrentTime(newTime);
+    for (const audio of Object.values(audioElsRef.current)) {
+      audio.currentTime = newTime;
+    }
   };
 
   const setGain = (stemId: string, value: number) => {
     gainsRef.current[stemId] = value;
     setGains((g) => ({ ...g, [stemId]: value }));
     const node = gainNodesRef.current[stemId];
-    if (node && !(mutedRef.current[stemId])) node.gain.value = value;
+    if (node && !mutedRef.current[stemId]) node.gain.value = value;
   };
 
   const toggleMute = (stemId: string) => {
@@ -176,10 +180,10 @@ export function MixPlayer({ stems, autoPlay, renderStemExtra }: MixPlayerProps) 
     return (
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0' }}>
         <div style={{ flex: 1, height: 3, background: 'var(--border)', borderRadius: 2 }}>
-          <div style={{ width: `${stems.length > 0 ? (loaded / stems.length) * 100 : 0}%`, height: '100%', background: 'var(--accent)', borderRadius: 2, transition: 'width 0.2s' }} />
+          <div style={{ width: `${stems.length > 0 ? (readyCount / stems.length) * 100 : 0}%`, height: '100%', background: 'var(--accent)', borderRadius: 2, transition: 'width 0.2s' }} />
         </div>
         <span style={{ fontSize: '11px', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
-          {loaded}/{stems.length} stems
+          {readyCount}/{stems.length} stems
         </span>
       </div>
     );
@@ -211,7 +215,7 @@ export function MixPlayer({ stems, autoPlay, renderStemExtra }: MixPlayerProps) 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
         {stems.map((s) => {
           const isMuted = muted[s.id] ?? false;
-          const stemDuration = buffersRef.current[s.id]?.duration ?? 0;
+          const stemDuration = audioElsRef.current[s.id]?.duration ?? 0;
           return (
             <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <button

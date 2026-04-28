@@ -6,10 +6,5 @@ export const audioProcessor = defineFunction({
   runtime: 20,
   timeoutSeconds: 300,
   memoryMB: 1024,
-  environment: {
-    // Set during deployment via Amplify secrets or env vars
-    MEDIACONVERT_ENDPOINT: '',
-    MEDIACONVERT_ROLE_ARN: '',
-    PROXIES_BUCKET: '',
-  },
+  resourceGroupName: 'storage',
 });

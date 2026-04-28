@@ -10,3 +10,6 @@ amplify_outputs.json
 # Local env
 .env
 .env.local
+
+# ffmpeg static binary (downloaded locally, not committed to git)
+amplify/layers/ffmpeg-bin/

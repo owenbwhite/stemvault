@@ -210,7 +210,8 @@ export function TrackDetail() {
           if (!row.file) return null;
 
           const ext = row.file.name.split('.').pop() ?? 'wav';
-          const s3Key = `stems/${entityId}/stems/${stemId}/${Date.now()}.${ext}`;
+          const versionId = crypto.randomUUID();
+          const s3Key = `stems/${entityId}/stems/${stemId}/${versionId}.${ext}`;
           await uploadData({
             path: s3Key,
             data: row.file,
@@ -220,6 +221,7 @@ export function TrackDetail() {
           const existingVersions = await client.models.StemVersion.list({ filter: { stemId: { eq: stemId } } });
           const nextLabel = `v${(existingVersions.data?.length ?? 0) + 1}`;
           const versionRes = await client.models.StemVersion.create({
+            id: versionId,
             stemId,
             s3Key,
             versionLabel: nextLabel,
