@@ -15,6 +15,7 @@ const client = generateClient<Schema>();
 
 type Project = Schema['Project']['type'];
 type Track = Schema['Track']['type'];
+type Collaborator = Schema['Collaborator']['type'];
 
 const TYPE_COLORS: Record<string, string> = {
   SINGLE: 'var(--accent)',
@@ -72,7 +73,9 @@ export function ProjectDetail() {
 
   const [project, setProject] = useState<Project | null>(null);
   const [tracks, setTracks] = useState<Track[]>([]);
+  const [collaborators, setCollaborators] = useState<Collaborator[]>([]);
   const [showAddTrack, setShowAddTrack] = useState(false);
+  const [showShare, setShowShare] = useState(false);
   const [showEditProject, setShowEditProject] = useState(false);
   const [showEditMarketing, setShowEditMarketing] = useState(false);
   const [addTrackForm, setAddTrackForm] = useState<AddTrackForm>({ title: '', bpm: '', keySignature: '' });
@@ -94,15 +97,21 @@ export function ProjectDetail() {
       setProject(res.data);
       setLoading(false);
     });
-    const sub = client.models.Track.observeQuery({
+    const trackSub = client.models.Track.observeQuery({
       filter: { projectId: { eq: projectId } },
     }).subscribe({
       next: ({ items }) => setTracks([...items].sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))),
     });
-    return () => sub.unsubscribe();
+    const colSub = client.models.Collaborator.observeQuery({
+      filter: { projectId: { eq: projectId } },
+    }).subscribe({
+      next: ({ items }) => setCollaborators([...items]),
+    });
+    return () => { trackSub.unsubscribe(); colSub.unsubscribe(); };
   }, [projectId]);
 
   const isOwner = !!user?.userId && user.userId === project?.ownerId;
+  const isEditor = isOwner || collaborators.some((c) => c.userId === user?.userId && c.role === 'EDITOR');
 
   const openEditModal = () => {
     if (!project) return;
@@ -326,11 +335,16 @@ export function ProjectDetail() {
         </div>
         <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
           {isOwner && (
+            <button className="btn-ghost btn-sm" onClick={() => setShowShare(true)} style={{ color: 'var(--text-muted)' }}>
+              Share
+            </button>
+          )}
+          {isOwner && (
             <button className="btn-ghost btn-sm" onClick={openEditModal} style={{ color: 'var(--text-muted)' }}>
               Edit project
             </button>
           )}
-          {isOwner && (
+          {isEditor && (
             <button className="btn-primary" onClick={() => setShowAddTrack(true)}>+ Add track</button>
           )}
         </div>
@@ -371,7 +385,7 @@ export function ProjectDetail() {
               </span>
             )}
             <div className="track-controls">
-              {isOwner && (
+              {isEditor && (
                 <>
                   <button
                     className="btn-ghost btn-sm"
@@ -432,6 +446,44 @@ export function ProjectDetail() {
       ) : (
         <div className="empty-state" style={{ padding: '24px 0' }}>
           <p style={{ margin: 0 }}>No marketing notes yet.{isOwner ? ' Click Edit to add release info, links, and promo notes.' : ''}</p>
+        </div>
+      )}
+
+      {/* ── Collaborators ──────────────────────────────────────────────────── */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 40, marginBottom: 8 }}>
+        <p className="section-title" style={{ margin: 0 }}>Collaborators</p>
+        {isOwner && (
+          <button className="btn-ghost btn-sm" onClick={() => setShowShare(true)} style={{ color: 'var(--text-muted)', fontSize: '11px' }}>
+            Share
+          </button>
+        )}
+      </div>
+
+      {collaborators.length === 0 ? (
+        <div className="empty-state" style={{ padding: '24px 0' }}>
+          <p style={{ margin: 0 }}>No collaborators yet.{isOwner ? ' Click Share to invite someone.' : ''}</p>
+        </div>
+      ) : (
+        <div className="card">
+          {collaborators.map((c, i) => (
+            <div
+              key={c.id}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 8, padding: '8px 0',
+                borderBottom: i < collaborators.length - 1 ? '1px solid var(--border-subtle)' : 'none',
+              }}
+            >
+              <span style={{ flex: 1, fontSize: '13px' }}>{c.email || c.displayName || c.userId}</span>
+              <span style={{
+                fontSize: '10px', fontWeight: 600,
+                color: c.role === 'EDITOR' ? 'var(--accent-green)' : 'var(--text-muted)',
+                border: `1px solid ${c.role === 'EDITOR' ? 'var(--accent-green)' : 'var(--border)'}`,
+                padding: '1px 6px', borderRadius: 4,
+              }}>
+                {c.role ?? 'VIEWER'}
+              </span>
+            </div>
+          ))}
         </div>
       )}
 
@@ -757,6 +809,117 @@ export function ProjectDetail() {
           </div>
         </div>
       )}
+
+      {showShare && (
+        <ShareModal
+          projectId={projectId!}
+          collaborators={collaborators}
+          onClose={() => setShowShare(false)}
+        />
+      )}
     </>
+  );
+}
+
+function ShareModal({ projectId, collaborators, onClose }: {
+  projectId: string;
+  collaborators: Collaborator[];
+  onClose: () => void;
+}) {
+  const [generatingRole, setGeneratingRole] = useState<'EDITOR' | 'VIEWER' | null>(null);
+  const [links, setLinks] = useState<Partial<Record<'EDITOR' | 'VIEWER', string>>>({});
+  const [copied, setCopied] = useState<'EDITOR' | 'VIEWER' | null>(null);
+
+  const generateLink = async (role: 'EDITOR' | 'VIEWER') => {
+    setGeneratingRole(role);
+    try {
+      const res = await client.models.InviteToken.create({ projectId, role });
+      if (res.data) {
+        const url = `${window.location.origin}/join/${res.data.id}`;
+        setLinks((prev) => ({ ...prev, [role]: url }));
+      }
+    } finally {
+      setGeneratingRole(null);
+    }
+  };
+
+  const copyLink = async (role: 'EDITOR' | 'VIEWER') => {
+    const url = links[role];
+    if (!url) return;
+    await navigator.clipboard.writeText(url);
+    setCopied(role);
+    setTimeout(() => setCopied(null), 2000);
+  };
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()} style={{ width: '480px' }}>
+        <h2 className="modal-title">Share project</h2>
+
+        {collaborators.length > 0 && (
+          <div style={{ marginBottom: 20 }}>
+            <p className="section-title" style={{ margin: '0 0 8px' }}>Current collaborators</p>
+            {collaborators.map((c) => (
+              <div key={c.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 0', borderBottom: '1px solid var(--border-subtle)' }}>
+                <span style={{ flex: 1, fontSize: '13px' }}>{c.email || c.displayName || c.userId}</span>
+                <span style={{
+                  fontSize: '10px', fontWeight: 600,
+                  color: c.role === 'EDITOR' ? 'var(--accent-green)' : 'var(--text-muted)',
+                  border: `1px solid ${c.role === 'EDITOR' ? 'var(--accent-green)' : 'var(--border)'}`,
+                  padding: '1px 6px', borderRadius: 4,
+                }}>
+                  {c.role ?? 'VIEWER'}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <p style={{ margin: '0 0 12px', fontSize: '13px', color: 'var(--text-secondary)' }}>
+          Generate an invite link. Anyone signed in who opens the link will join as that role.
+        </p>
+
+        <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
+          <button
+            className="btn-secondary"
+            onClick={() => generateLink('EDITOR')}
+            disabled={!!generatingRole}
+            style={{ flex: 1 }}
+          >
+            {generatingRole === 'EDITOR' ? 'Generating…' : '+ Editor link'}
+          </button>
+          <button
+            className="btn-ghost btn-sm"
+            onClick={() => generateLink('VIEWER')}
+            disabled={!!generatingRole}
+            style={{ flex: 1 }}
+          >
+            {generatingRole === 'VIEWER' ? 'Generating…' : '+ Viewer link'}
+          </button>
+        </div>
+
+        {(['EDITOR', 'VIEWER'] as const).map((role) => links[role] ? (
+          <div key={role} style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
+            <span style={{
+              fontSize: '10px', fontWeight: 600, minWidth: 46,
+              color: role === 'EDITOR' ? 'var(--accent-green)' : 'var(--text-muted)',
+            }}>{role}</span>
+            <input
+              readOnly
+              value={links[role]}
+              style={{ flex: 1, fontSize: '11px', fontFamily: 'var(--font-mono)', padding: '4px 8px' }}
+              onClick={(e) => (e.target as HTMLInputElement).select()}
+            />
+            <button className="btn-ghost btn-sm" onClick={() => copyLink(role)}>
+              {copied === role ? 'Copied!' : 'Copy'}
+            </button>
+          </div>
+        ) : null)}
+
+        <div className="modal-actions">
+          <button className="btn-secondary" onClick={onClose}>Close</button>
+        </div>
+      </div>
+    </div>
   );
 }

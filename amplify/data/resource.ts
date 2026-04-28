@@ -39,7 +39,7 @@ const schema = a.schema({
     })
     .authorization((allow) => [
       allow.owner(),
-      allow.authenticated().to(['read']),
+      allow.authenticated().to(['create', 'read', 'update']),
     ]),
 
   // A single audio/MIDI stem within a Track (was Track)
@@ -57,7 +57,7 @@ const schema = a.schema({
     })
     .authorization((allow) => [
       allow.owner(),
-      allow.authenticated().to(['read']),
+      allow.authenticated().to(['create', 'read', 'update']),
     ]),
 
   // A specific uploaded file for a Stem (was Version)
@@ -83,6 +83,16 @@ const schema = a.schema({
       midiMetadata: a.json(),
     })
     .authorization((allow) => [allow.authenticated()]),
+
+  InviteToken: a
+    .model({
+      projectId: a.id().required(),
+      role: a.enum(['EDITOR', 'VIEWER']),
+    })
+    .authorization((allow) => [
+      allow.owner(),
+      allow.authenticated().to(['read']),
+    ]),
 
   // A proposed set of changes to a Track's stems (was Branch)
   Edit: a

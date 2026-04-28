@@ -46,6 +46,7 @@ export function TrackDetail() {
   const [edits, setEdits] = useState<Edit[]>([]);
   const [editRequests, setEditRequests] = useState<EditRequest[]>([]);
   const [projectOwnerId, setProjectOwnerId] = useState<string | null>(null);
+  const [collaborators, setCollaborators] = useState<Schema['Collaborator']['type'][]>([]);
   const [tab, setTab] = useState<Tab>('current');
   const [masterMixStems, setMasterMixStems] = useState<StemTrack[] | null>(null);
   const [loadingMasterMix, setLoadingMasterMix] = useState(false);
@@ -67,6 +68,7 @@ export function TrackDetail() {
   const alsDirInputRef = useRef<HTMLInputElement>(null);
 
   const isOwner = !!user?.userId && !!projectOwnerId && user.userId === projectOwnerId;
+  const isEditor = isOwner || collaborators.some((c) => c.userId === user?.userId && c.role === 'EDITOR');
 
   useEffect(() => {
     if (!trackId) return;
@@ -74,9 +76,15 @@ export function TrackDetail() {
       setTrack(res.data);
       setLoading(false);
     });
+    let colSub: { unsubscribe: () => void } | undefined;
     if (projectId) {
       client.models.Project.get({ id: projectId }).then((res) => {
         setProjectOwnerId(res.data?.ownerId ?? null);
+      });
+      colSub = client.models.Collaborator.observeQuery({
+        filter: { projectId: { eq: projectId } },
+      }).subscribe({
+        next: ({ items }) => setCollaborators([...items]),
       });
     }
 
@@ -102,7 +110,7 @@ export function TrackDetail() {
       ),
     });
 
-    return () => { stemSub.unsubscribe(); editSub.unsubscribe(); erSub.unsubscribe(); };
+    return () => { stemSub.unsubscribe(); editSub.unsubscribe(); erSub.unsubscribe(); colSub?.unsubscribe(); };
   }, [trackId, projectId]);
 
   const loadMasterMix = async (snapshot: Snapshot) => {
@@ -316,7 +324,7 @@ export function TrackDetail() {
           </div>
         </div>
         <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-          {isOwner && (
+          {isEditor && (
             <button
               className="btn-ghost btn-sm"
               style={{ color: 'var(--text-muted)' }}
@@ -328,7 +336,7 @@ export function TrackDetail() {
               Edit track
             </button>
           )}
-          {tab === 'current' && isOwner && (
+          {tab === 'current' && isEditor && (
             <>
               <button className="btn-secondary" onClick={() => setShowAddStem(true)}>+ Add stem</button>
               <button className="btn-secondary" onClick={() => setShowBulkUpload(true)}>↑ Upload stems</button>
@@ -409,8 +417,8 @@ export function TrackDetail() {
           {Object.keys(mainSnapshot).length === 0 && !loadingMasterMix ? (
             <div className="empty-state">
               <div className="empty-state-icon">🎚️</div>
-              <p>No main mix yet.{isOwner ? ' Upload stems to get started.' : ' The owner has not added stems yet.'}</p>
-              {isOwner && (
+              <p>No main mix yet.{isEditor ? ' Upload stems to get started.' : ' The owner has not added stems yet.'}</p>
+              {isEditor && (
                 <div style={{ display: 'flex', gap: '8px' }}>
                   <button className="btn-secondary" onClick={() => setShowAddStem(true)}>Add stem</button>
                   <button className="btn-secondary" onClick={() => setShowBulkUpload(true)}>Upload stems</button>
@@ -439,8 +447,8 @@ export function TrackDetail() {
             </div>
           )}
 
-          {/* Stems added but not yet in the main mix — owner only */}
-          {isOwner && untrackedStems.length > 0 && (
+          {/* Stems added but not yet in the main mix — editors only */}
+          {isEditor && untrackedStems.length > 0 && (
             <>
               <p className="section-title" style={{ marginTop: 8, color: 'var(--text-muted)' }}>
                 Not in mix ({untrackedStems.length})
