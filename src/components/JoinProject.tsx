@@ -64,6 +64,9 @@ export function JoinProject() {
   }
 
   return (
-    <div style={{ color: 'var(--text-muted)', padding: '40px 0' }}>Joining project…</div>
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '60vh', flexDirection: 'column', gap: 12 }}>
+      <div style={{ color: 'var(--text-primary)', fontSize: '15px' }}>Joining project…</div>
+      <div style={{ color: 'var(--text-muted)', fontSize: '13px' }}>You'll be redirected in a moment.</div>
+    </div>
   );
 }
