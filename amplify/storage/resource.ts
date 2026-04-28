@@ -9,6 +9,7 @@ export const stemsStorage = defineStorage({
   access: (allow) => ({
     'stems/{entity_id}/*': [
       allow.entity('identity').to(['read', 'write', 'delete']),
+      allow.authenticated.to(['read']),
     ],
   }),
 });
