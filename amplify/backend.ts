@@ -2,8 +2,6 @@ import { defineBackend } from '@aws-amplify/backend';
 import { auth } from './auth/resource';
 import { data } from './data/resource';
 import * as path from 'path';
-import { fileURLToPath } from 'url';
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
 import { stemsStorage, proxiesStorage } from './storage/resource';
 import { audioProcessor } from './functions/audioProcessor/resource';
 import { EventType } from 'aws-cdk-lib/aws-s3';
@@ -41,7 +39,7 @@ stemsBucket.addEventNotification(
 
 // ffmpeg Lambda layer — provides /opt/bin/ffmpeg inside the Lambda runtime
 const ffmpegLayer = new lambdaCdk.LayerVersion(Stack.of(fn), 'FfmpegLayer', {
-  code: lambdaCdk.Code.fromAsset(path.join(__dirname, '../layers/ffmpeg-bin')),
+  code: lambdaCdk.Code.fromAsset(path.resolve('amplify/layers/ffmpeg-bin')),
   compatibleRuntimes: [lambdaCdk.Runtime.NODEJS_20_X],
   description: 'ffmpeg static binary (johnvansickle.com)',
 });

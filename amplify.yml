@@ -8,6 +8,11 @@ backend:
     build:
       commands:
         - npm install --legacy-peer-deps
+        - mkdir -p amplify/layers/ffmpeg-bin/bin
+        - curl -L https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz -o /tmp/ffmpeg.tar.xz
+        - tar -xf /tmp/ffmpeg.tar.xz -C /tmp/
+        - cp /tmp/ffmpeg-*-amd64-static/ffmpeg amplify/layers/ffmpeg-bin/bin/ffmpeg
+        - chmod +x amplify/layers/ffmpeg-bin/bin/ffmpeg
         - npx ampx pipeline-deploy --branch $AWS_BRANCH --app-id $AWS_APP_ID
 frontend:
   phases:

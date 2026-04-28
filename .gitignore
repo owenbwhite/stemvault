@@ -13,3 +13,4 @@ amplify_outputs.json
 
 # ffmpeg static binary (downloaded locally, not committed to git)
 amplify/layers/ffmpeg-bin/
+layers/
