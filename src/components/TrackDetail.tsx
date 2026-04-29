@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { generateClient } from 'aws-amplify/data';
 import { getUrl, uploadData } from 'aws-amplify/storage';
+import { proxiesBucketOption } from '../utils/storage';
 import { fetchAuthSession } from 'aws-amplify/auth';
 import { useAuthenticator } from '@aws-amplify/ui-react';
 import type { Schema } from '../../amplify/data/resource';
@@ -124,7 +125,7 @@ export function TrackDetail() {
           const res = await client.models.StemVersion.get({ id: versionId });
           const key = res.data?.proxyS3Key ?? res.data?.s3Key;
           if (!key) return null;
-          const { url } = await getUrl({ path: key, options: { expiresIn: 3600 } });
+          const { url } = await getUrl({ path: key, options: { ...(res.data?.proxyS3Key ? { bucket: proxiesBucketOption } : {}), expiresIn: 3600 } });
           return {
             id: stemId,
             name: stem.name,

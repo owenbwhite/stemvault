@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { generateClient } from 'aws-amplify/data';
 import { getUrl } from 'aws-amplify/storage';
+import { proxiesBucketOption } from '../utils/storage';
 import type { Schema } from '../../amplify/data/resource';
 import { MixPlayer, type StemTrack } from './MixPlayer';
 import { type Snapshot, encodeSnapshot, decodeSnapshot } from './snapshotUtils';
@@ -63,7 +64,7 @@ export function EditRequestDetail() {
         const key = version.proxyS3Key ?? version.s3Key;
         if (!key) return null;
         try {
-          const { url } = await getUrl({ path: key, options: { expiresIn: 3600 } });
+          const { url } = await getUrl({ path: key, options: { ...(version.proxyS3Key ? { bucket: proxiesBucketOption } : {}), expiresIn: 3600 } });
           return { id: stemId, name: stem.name, category: stem.stemCategory, url: url.toString() } as StemTrack;
         } catch {
           return null;

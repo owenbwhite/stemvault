@@ -4,6 +4,7 @@ import { generateClient } from 'aws-amplify/data';
 import { uploadData, getUrl } from 'aws-amplify/storage';
 import { fetchAuthSession } from 'aws-amplify/auth';
 import type { Schema } from '../../amplify/data/resource';
+import { proxiesBucketOption } from '../utils/storage';
 import { MixPlayer, type StemTrack } from './MixPlayer';
 import { type Snapshot, encodeSnapshot, decodeSnapshot } from './snapshotUtils';
 import { STEM_CATEGORIES, classifyStem, type StemCategory } from './BulkUploadModal';
@@ -71,7 +72,7 @@ export function EditDetail() {
             const res = await client.models.StemVersion.get({ id: versionId });
             const key = res.data?.proxyS3Key ?? res.data?.s3Key;
             if (!key) return null;
-            const { url } = await getUrl({ path: key, options: { expiresIn: 3600 } });
+            const { url } = await getUrl({ path: key, options: { ...(res.data?.proxyS3Key ? { bucket: proxiesBucketOption } : {}), expiresIn: 3600 } });
             return { id: stemId, name: stem.name, fileType: stem.type === 'MIDI' ? 'MIDI' : 'AUDIO', url: url.toString(), onNameClick: () => navigate(`/project/${projectId}/track/${trackId}/stem/${stemId}`) } as StemTrack;
           } catch { return null; }
         })
@@ -112,7 +113,7 @@ export function EditDetail() {
           const res = await client.models.StemVersion.get({ id: versionId });
           const key = res.data?.proxyS3Key ?? res.data?.s3Key;
           if (!key) return null;
-          const { url } = await getUrl({ path: key, options: { expiresIn: 3600 } });
+          const { url } = await getUrl({ path: key, options: { ...(res.data?.proxyS3Key ? { bucket: proxiesBucketOption } : {}), expiresIn: 3600 } });
           return { id: stemId, name: stem.name, category: stem.stemCategory, fileType: stem.type === 'MIDI' ? 'MIDI' : 'AUDIO', url: url.toString(), onNameClick: () => navigate(`/project/${projectId}/track/${trackId}/stem/${stemId}`) } as StemTrack;
         } catch { return null; }
       })

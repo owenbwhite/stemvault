@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 
 export interface StemTrack {
   id: string;
@@ -30,7 +30,6 @@ export function MixPlayer({ stems, autoPlay, renderStemExtra }: MixPlayerProps) 
   const gainNodesRef = useRef<Record<string, GainNode>>({});
   const gainsRef = useRef<Record<string, number>>({});
   const mutedRef = useRef<Record<string, boolean>>({});
-  const rafRef = useRef(0);
   const durationRef = useRef(0);
   const readyCountRef = useRef(0);
 
@@ -51,7 +50,9 @@ export function MixPlayer({ stems, autoPlay, renderStemExtra }: MixPlayerProps) 
     readyCountRef.current = 0;
     let maxDuration = 0;
 
-    for (const stem of stems) {
+    for (let i = 0; i < stems.length; i++) {
+      const stem = stems[i];
+      const isMaster = i === 0;
       const audio = new Audio();
       audio.crossOrigin = 'anonymous';
       audio.preload = 'auto';
@@ -65,19 +66,36 @@ export function MixPlayer({ stems, autoPlay, renderStemExtra }: MixPlayerProps) 
       const source = ctx.createMediaElementSource(audio);
       source.connect(gainNode);
 
+      const updateDuration = () => {
+        if (isFinite(audio.duration) && audio.duration > 0) {
+          maxDuration = Math.max(maxDuration, audio.duration);
+          durationRef.current = maxDuration;
+          setDuration(maxDuration);
+        }
+      };
+
+      audio.addEventListener('loadedmetadata', updateDuration);
+      audio.addEventListener('durationchange', updateDuration);
+
+      if (isMaster) {
+        audio.addEventListener('timeupdate', () => {
+          setCurrentTime(audio.currentTime);
+        });
+        audio.addEventListener('ended', () => {
+          for (const a of Object.values(audioElsRef.current)) {
+            a.pause();
+            a.currentTime = 0;
+          }
+          setPlaying(false);
+          setCurrentTime(0);
+        });
+      }
+
       const markReady = () => {
         readyCountRef.current += 1;
         setReadyCount(readyCountRef.current);
         if (readyCountRef.current === stems.length) setReady(true);
       };
-
-      audio.addEventListener('loadedmetadata', () => {
-        if (isFinite(audio.duration)) {
-          maxDuration = Math.max(maxDuration, audio.duration);
-          durationRef.current = maxDuration;
-          setDuration(maxDuration);
-        }
-      });
 
       audio.addEventListener('canplaythrough', markReady, { once: true });
       if (audio.readyState >= HTMLMediaElement.HAVE_ENOUGH_DATA) markReady();
@@ -89,7 +107,6 @@ export function MixPlayer({ stems, autoPlay, renderStemExtra }: MixPlayerProps) 
     }
 
     return () => {
-      cancelAnimationFrame(rafRef.current);
       for (const audio of Object.values(audioElsRef.current)) {
         audio.pause();
         audio.src = '';
@@ -101,28 +118,6 @@ export function MixPlayer({ stems, autoPlay, renderStemExtra }: MixPlayerProps) 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const stopRaf = useCallback(() => cancelAnimationFrame(rafRef.current), []);
-
-  const startRaf = useCallback(() => {
-    const tick = () => {
-      const master = Object.values(audioElsRef.current)[0];
-      if (!master) return;
-      const t = master.currentTime;
-      setCurrentTime(t);
-      if (master.ended || t >= durationRef.current - 0.05) {
-        for (const a of Object.values(audioElsRef.current)) {
-          a.pause();
-          a.currentTime = 0;
-        }
-        setPlaying(false);
-        setCurrentTime(0);
-        return;
-      }
-      rafRef.current = requestAnimationFrame(tick);
-    };
-    rafRef.current = requestAnimationFrame(tick);
-  }, []);
-
   useEffect(() => {
     if (ready && autoPlay) {
       ctxRef.current?.resume().then(() => {
@@ -130,21 +125,18 @@ export function MixPlayer({ stems, autoPlay, renderStemExtra }: MixPlayerProps) 
           audio.play().catch(() => {});
         }
         setPlaying(true);
-        startRaf();
       });
     }
-  }, [ready, autoPlay, startRaf]);
+  }, [ready, autoPlay]);
 
   const toggle = async () => {
     if (playing) {
       for (const audio of Object.values(audioElsRef.current)) audio.pause();
-      stopRaf();
       setPlaying(false);
     } else {
       await ctxRef.current?.resume();
       for (const audio of Object.values(audioElsRef.current)) audio.play().catch(() => {});
       setPlaying(true);
-      startRaf();
     }
   };
 
@@ -204,7 +196,7 @@ export function MixPlayer({ stems, autoPlay, renderStemExtra }: MixPlayerProps) 
           style={{ flex: 1, height: 5, background: 'var(--border)', borderRadius: 3, cursor: 'pointer', position: 'relative' }}
           onClick={seek}
         >
-          <div style={{ width: `${duration > 0 ? (currentTime / duration) * 100 : 0}%`, height: '100%', background: 'var(--accent)', borderRadius: 3, transition: 'width 0.05s linear' }} />
+          <div style={{ width: `${duration > 0 ? (currentTime / duration) * 100 : 0}%`, height: '100%', background: 'var(--accent)', borderRadius: 3, transition: 'width 0.25s linear' }} />
         </div>
         <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', whiteSpace: 'nowrap' }}>
           {fmt(currentTime)} / {fmt(duration)}
